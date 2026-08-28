@@ -1,0 +1,6 @@
+/target
+
+# This is a library crate consumed as a git dependency by other apps
+# (wraith-linux, tpv-el-haido2). Each consumer's own Cargo.lock is what
+# pins versions for a build; committing one here would just go stale.
+Cargo.lock
