@@ -1,10 +1,16 @@
 [package]
 name = "mks-ota"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Updater crate reusable across Tauri apps: hub-agnostic manifest, minisign verification, streaming download, full-package install (macOS)."
+description = "Updater crate reusable across Tauri apps: hub-agnostic manifest, minisign verification, streaming download, full-package install (macOS), and A/B-slot partial install."
 repository = "https://github.com/MKS2508/mks-ota"
+
+[features]
+default = []
+# Everything that needs a Tauri runtime handle: the custom URI scheme
+# handler and the hot-apply watchdog timer.
+tauri = ["dep:tauri", "dep:tokio"]
 
 [dependencies]
 minisign-verify = "0.2.5"
@@ -18,3 +24,11 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri = { version = "2", optional = true, default-features = false }
+tokio = { version = "1", optional = true, features = ["time"] }
+
+[dev-dependencies]
+# Signing half for the partial tests: signs artifacts the way the publisher
+# does, so the verify path is exercised against real minisign output.
+minisign = "0.7"

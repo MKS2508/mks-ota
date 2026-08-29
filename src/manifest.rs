@@ -44,6 +44,75 @@ impl HubLatest {
     }
 }
 
+/// Assembles the `latest` URL for a platform-agnostic partial artifact
+/// (component convention L3: published AND queried with `target=any&arch=any`).
+/// The hub's SQL match is exact equality — publish `any` against a query for
+/// `all` and the answer is a silent 404.
+pub fn partial_latest_url(hub_base: &str, component: &str) -> String {
+    format!("{hub_base}/api/components/{component}/latest?target=any&arch=any")
+}
+
+/// Interprets `max`, which the haido contract defines as an INCLUSIVE upper
+/// bound that also admits ranges (extracted from `tpv-el-haido2`
+/// `ota/manifest.rs::parse_max`).
+///
+/// A bare version (`"1.6.0"`) reads as `<=1.6.0`, which is what the field
+/// name says: everything below enters. Anything else (`"1.5.x"`, `"^1.5.0"`,
+/// `">=1 <2"`) reads as a range verbatim.
+///
+/// Treating a bare version as a range — which is what the hub did with
+/// `semver.satisfies` before commit `bcda900` — turns `[1.4.0, 1.6.0]` into
+/// "only exactly 1.6.0"; see `a_bare_upper_bound_is_inclusive`.
+fn parse_max(raw: &str) -> Result<semver::VersionReq, OtaError> {
+    let cleaned = raw.trim().replace(".x", ".*").replace(".X", ".*");
+
+    // The hub validates with node-semver, which separates a range's
+    // comparators with spaces (">=1.0.0 <2.0.0"); Rust's crate wants commas.
+    // A range the hub accepts must parse here too.
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(", ");
+
+    // node-semver admits `||` alternatives, which this crate does not
+    // support. Rejected explicitly instead of letting the parse fail with a
+    // message that says nothing.
+    if cleaned.contains("||") {
+        return Err(OtaError::BadVersion(format!(
+            "{raw}: ranges with `||` are not supported on the client"
+        )));
+    }
+
+    let is_plain_version = semver::Version::parse(&cleaned).is_ok();
+    let expr = if is_plain_version { format!("<={cleaned}") } else { cleaned };
+    semver::VersionReq::parse(&expr).map_err(|_| OtaError::BadVersion(raw.to_string()))
+}
+
+/// Checks that the native binary falls inside the declared window
+/// `[min, max]` — the guard that stops a new partial artifact from landing
+/// on a binary lacking the commands that artifact calls. Validated on the
+/// client too, not only on the hub: the client does not trust the server.
+///
+/// `min` is a concrete version compared with `>=`; `max` is an inclusive
+/// upper bound that also admits ranges (see [`parse_max`]). In the
+/// `components` channel the hub does not carry this window — the caller
+/// declares its own constants per release.
+pub fn native_within_window(native: &str, min: &str, max: &str) -> Result<(), OtaError> {
+    let native = semver::Version::parse(native)
+        .map_err(|_| OtaError::BadVersion(native.to_string()))?;
+
+    let min = semver::Version::parse(min.trim())
+        .map_err(|_| OtaError::BadVersion(min.to_string()))?;
+    let bound = parse_max(max)?;
+
+    if native >= min && bound.matches(&native) {
+        Ok(())
+    } else {
+        Err(OtaError::Incompatible {
+            native: native.to_string(),
+            min: min.to_string(),
+            max: max.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +179,101 @@ mod tests {
     fn malformed_version_is_a_typed_error_not_a_panic() {
         let bad = HubLatest { version: "not-a-version".into(), ..sample("sha256:unknown") };
         assert!(bad.is_newer_than("0.1.1").is_err());
+    }
+
+    // ── Partial-artifact component URL (L3) ──────────────────────────────
+
+    #[test]
+    fn partial_latest_url_pins_target_any_arch_any() {
+        assert_eq!(
+            partial_latest_url("https://haido.releases.mks2508.systems", "haido-frontend"),
+            "https://haido.releases.mks2508.systems/api/components/haido-frontend/latest?target=any&arch=any"
+        );
+    }
+
+    // ── Native compatibility window (ported from tpv-el-haido2) ──────────
+
+    #[test]
+    fn the_native_window_is_inclusive_on_both_ends() {
+        assert!(native_within_window("1.4.0", "1.4.0", "1.6.0").is_ok(), "the minimum enters");
+        assert!(native_within_window("1.6.0", "1.4.0", "1.6.0").is_ok(), "the maximum enters");
+        assert!(native_within_window("1.5.9", "1.4.0", "1.6.0").is_ok());
+        assert!(native_within_window("1.3.9", "1.4.0", "1.6.0").is_err(), "below does not");
+        assert!(native_within_window("1.6.1", "1.4.0", "1.6.0").is_err(), "above does not");
+    }
+
+    #[test]
+    fn a_bare_upper_bound_is_inclusive() {
+        // The field name says "max native version", so a bare "1.6.0" means
+        // <=1.6.0. Reading it as a range (semver.satisfies) would make
+        // [1.4.0, 1.6.0] reach only exactly-1.6.0 binaries and silently skip
+        // every 1.5.x. The hub had this bug until bcda900; this is the
+        // client-side half of that fix.
+        assert!(native_within_window("1.4.0", "1.4.0", "1.6.0").is_ok(), "the minimum enters");
+        assert!(native_within_window("1.5.9", "1.4.0", "1.6.0").is_ok(), "the middle enters");
+        assert!(native_within_window("1.6.0", "1.4.0", "1.6.0").is_ok(), "the maximum enters");
+        assert!(native_within_window("1.3.9", "1.4.0", "1.6.0").is_err());
+        assert!(native_within_window("1.6.1", "1.4.0", "1.6.0").is_err());
+    }
+
+    #[test]
+    fn the_ranges_the_hub_accepts_are_accepted() {
+        // The hub validates max with semver.validRange, which accepts any
+        // range. The client must understand the same ones, or it would
+        // reject valid artifacts.
+        assert!(native_within_window("1.5.3", "1.0.0", "^1.5.0").is_ok());
+        assert!(native_within_window("2.0.0", "1.0.0", "^1.5.0").is_err());
+
+        assert!(native_within_window("1.9.9", "1.0.0", ">=1.0.0 <2.0.0").is_ok());
+        assert!(native_within_window("2.0.1", "1.0.0", ">=1.0.0 <2.0.0").is_err());
+    }
+
+    #[test]
+    fn the_contract_patch_wildcard_is_understood() {
+        // "1.5.x" is not valid semver: it must be normalized before parsing.
+        assert!(native_within_window("1.5.0", "1.4.0", "1.5.x").is_ok());
+        assert!(native_within_window("1.5.12", "1.4.0", "1.5.x").is_ok());
+        assert!(native_within_window("1.6.0", "1.4.0", "1.5.x").is_err());
+    }
+
+    #[test]
+    fn matches_the_hub_window() {
+        // Table generated by running the hub's real implementation
+        // (BundleService.withinWindow, desktop-release-hub bcda900, after the
+        // bare-upper-bound fix) over these same fourteen cases. If either
+        // side changes criteria, this test catches it before the hub starts
+        // serving artifacts the client silently discards.
+        let cases: &[(&str, &str, &str, bool)] = &[
+            ("0.2.0", "0.2.0", "0.2.x", true),
+            ("0.2.3", "0.2.0", "0.2.x", true),
+            ("0.3.0", "0.2.0", "0.2.x", false),
+            ("1.5.9", "1.4.0", "1.6.0", true),
+            ("1.4.0", "1.4.0", "1.6.0", true),
+            ("1.6.0", "1.4.0", "1.6.0", true),
+            ("1.6.1", "1.4.0", "1.6.0", false),
+            ("1.3.9", "1.4.0", "1.6.0", false),
+            ("1.5.3", "1.0.0", "^1.5.0", true),
+            ("2.0.0", "1.0.0", "^1.5.0", false),
+            ("1.9.9", "1.0.0", ">=1.0.0 <2.0.0", true),
+            ("2.0.1", "1.0.0", ">=1.0.0 <2.0.0", false),
+            ("0.1.0", "0.1.0", "0.9.0", true),
+            ("0.5.0", "0.1.0", "0.9.0", true),
+        ];
+
+        for (native, min, max, expected) in cases {
+            assert_eq!(
+                native_within_window(native, min, max).is_ok(),
+                *expected,
+                "native {native} with window [{min}, {max}]: the hub says {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_version_is_not_assumed_compatible() {
+        assert!(matches!(
+            native_within_window("not-semver", "0.1.0", "0.9.0").unwrap_err(),
+            OtaError::BadVersion(_)
+        ));
     }
 }

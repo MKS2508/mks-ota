@@ -1,7 +1,7 @@
 //! Error type shared by every stage of the update pipeline.
 
-/// Errors surfaced by signature verification, download, and full-package
-/// install.
+/// Errors surfaced by signature verification, download, full-package
+/// install, and partial (slot) install.
 #[derive(Debug, thiserror::Error)]
 pub enum OtaError {
     #[error("network request failed: {0}")]
@@ -15,6 +15,21 @@ pub enum OtaError {
 
     #[error("signature is malformed: {0}")]
     SignatureMalformed(String),
+
+    #[error("native {native} falls outside the declared window [{min}, {max}]")]
+    Incompatible { native: String, min: String, max: String },
+
+    #[error("unparseable version string: {0}")]
+    BadVersion(String),
+
+    #[error("partial artifact archive is invalid: {0}")]
+    BadArchive(String),
+
+    #[error("nothing is staged to activate")]
+    NothingStaged,
+
+    #[error("could not persist the slot state: {0}")]
+    StateIo(String),
 
     #[error("signature key id does not match the trust anchor")]
     UnexpectedKeyId,
