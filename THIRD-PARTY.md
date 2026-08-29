@@ -21,8 +21,10 @@ What was **not** carried over from `updater.rs`:
 - buffering the artifact entirely in memory before verifying (`updater.rs:730-742`) — this
   crate streams to a temp file and verifies with constant RAM (`src/download.rs`,
   `src/verify.rs`);
-- the Windows NSIS/MSI install path and the Linux AppImage path (`src/install/full/linux.rs`
-  in this crate is a declared, unimplemented module — F1 scope is macOS-only).
+- the Windows NSIS/MSI install path — implemented in this crate as `install/full/linux.rs`
+  (see ADR-0046). The AppImage path was derived from `updater.rs:101-113` (`APPIMAGE`
+  env-var lookup) and `updater.rs:1064` (same-device `rename` check, `TempDirNotOnSameMountPoint`);
+  the deb path uses `dpkg -i` as a fallback for non-AppImage installs.
 
 What was **added** on top of the derived logic, because the original either lacks it or has a
 latent bug here:

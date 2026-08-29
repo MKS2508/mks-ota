@@ -1,6 +1,6 @@
 [package]
 name = "mks-ota"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Updater crate reusable across Tauri apps: hub-agnostic manifest, minisign verification, streaming download, full-package install (macOS), and A/B-slot partial install."
