@@ -24,7 +24,14 @@ What was **not** carried over from `updater.rs`:
 - the Windows NSIS/MSI install path — implemented in this crate as `install/full/linux.rs`
   (see ADR-0046). The AppImage path was derived from `updater.rs:101-113` (`APPIMAGE`
   env-var lookup) and `updater.rs:1064` (same-device `rename` check, `TempDirNotOnSameMountPoint`);
-  the deb path uses `dpkg -i` as a fallback for non-AppImage installs.
+  the deb path uses `pkexec dpkg -i` as a fallback for non-AppImage installs, ported from the
+  first of `try_install_with_privileges`'s three escalation steps (`updater.rs:1106-1123`) — the
+  GUI-password (zenity/kdialog piping into `sudo -S`) and terminal-`sudo` fallbacks were not
+  carried over, per waxin's lock: only pkexec, a clear error with the manual command otherwise.
+  `install_deb`'s `infer::archive::is_deb(bytes)` guard (`updater.rs:1049-1057`) was also ported,
+  as a hand-rolled magic-byte check (`!<arch>\n`) instead of pulling in the `infer` crate — this
+  crate's manifest has no package-format dimension yet, so the deb branch can be handed the same
+  tar.gz an AppImage install would get; the magic check also drives extracting a wrapped `.deb`.
 
 What was **added** on top of the derived logic, because the original either lacks it or has a
 latent bug here:
