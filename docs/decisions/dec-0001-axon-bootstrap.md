@@ -33,7 +33,10 @@ diagnóstico completo de este crate — vivía disperso en otro repo, sin absorb
 3. **Mutaciones SOLO vía axon CLI** (`bunx @mks2508/axon` ≥0.2.2:
    `set-status`/`set-gate`/`add-gate`/`add-node`/`rm-node`/`set-node`). Edición manual del
    `.yml` prohibida salvo las excepciones documentadas en el evidence del bootstrap (ver
-   abajo) — todas cosméticas (blank lines, comentarios de gate), nunca contenido semántico.
+   abajo): la mayoría cosméticas (blank lines, comentarios de gate, nodo semilla, entradas de
+   `decisions:`), y una semántica y deliberada — `completedDate` de `track/full-install-macos`
+   backfillada a la fecha real del commit (`2026-08-28`) porque `set-status ... done` solo
+   estampa "hoy"; el bootstrap importa trabajo histórico, no lo completa en el momento.
 4. **Commit único del setup, sin push.** El push de cualquier rama requiere OK explícito de
    waxin en el mismo turno.
 

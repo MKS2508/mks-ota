@@ -92,7 +92,7 @@ nodes:
         - id: U2
           verdict: pass
           class: live-evidence
-          evidenceRef: [0a6f05dc, df2a891f]
+          evidenceRef: [0a6f05d37e3f, df2a891faef0]
           verifiedBy: axon
 
   - id: track/partial-channel
@@ -132,7 +132,7 @@ nodes:
         - id: U1
           verdict: pass
           class: impl
-          evidenceRef: [8df41381]
+          evidenceRef: [8df4138aac24]
           verifiedBy: axon
 
   - id: track/ci-hardening
