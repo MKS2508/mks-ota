@@ -1,0 +1,163 @@
+# mks-ota — modelo de roadmap (SSOT)
+#
+# Mutaciones SOLO vía axon CLI (`bunx @mks2508/axon`), nunca edición manual
+# (lock dec-0001). Doc derivado: docs/ROADMAP.md — guard:
+# `bunx @mks2508/axon gen --out docs --check`.
+
+authoritative: true
+model: mks-ota-roadmap
+modelVersion: '1'
+kindEnumVersion: 1
+zoneEnumVersion: 1
+project: mks-ota
+derivedFrom: docs/handoffs/evidence/diseno-ota-parcial-034-2026-09-02.md
+
+nodes:
+  - id: outcome/ota-crate-verified
+    kind: outcome
+    title: mks-ota — full-cycle verificado en ambas plataformas, sin deuda de payload ni de honestidad de doc
+    status: in_progress
+    refs: [dec-0001, adr-0045, adr-0046]
+    docs: [docs/handoffs/evidence/diseno-ota-parcial-034-2026-09-02.md]
+    milestones:
+      - id: outcome/ota-crate-verified/minisign-key-rotation-cross-repo-dep
+        title: 'NO_ES_BUG_DE_ESTE_CRATE — verify.rs toma el pubkey como parámetro (&str, ''app-specific, baked in by the caller'', comentario en verify.rs:19-21): el crate en sí es agnóstico de clave. El trust anchor bakeado como constante compilada en DOS binarios distintos vive en los REPOS CONSUMIDORES (hub + desktop app), no aquí. La decisión de ''una clave por proyecto o por componente'' la está lockeando waxin en el repo del hub — este nodo solo refleja la dependencia cross-repo, NO la decide.'
+        status: queued
+        dependsOn: []
+
+    gate:
+      items:
+        - id: G1
+          verdict: open
+          class: gate
+          # full install (macOS+Linux) instalado y usado por una app real en
+          # producción, no solo verificado por tests unitarios
+
+        - id: G2
+          verdict: open
+          class: gate
+          # canal parcial deja de mentir en mod.rs (frontend-only, no
+          # "sidecar, assets, hooks/skills") Y soporta al menos un payload
+          # no-frontend, o el doc se corrige para decir "solo frontend"
+
+        - id: G3
+          verdict: open
+          class: gate
+          # smoke del ciclo completo (publish -> stage -> activar ->
+          # confirmar -> sobrevivir 3 arranques -> rollback provocado)
+          # existe y pasa — ver track/partial-channel/no-full-cycle-smoke
+
+        - id: G4
+          verdict: open
+          class: gate
+          # CI verde de verdad: `cargo test` (el comando real del workflow,
+          # no solo --lib) pasa en las dos patas de la matriz — ver
+          # track/ci-hardening/cargo-test-broken-on-macos
+
+  - id: track/full-install-macos
+    kind: track
+    zone: full-install
+    title: 'F1 — verify+download+install full macOS (install::full::macos)'
+    status: done
+    completedDate: '2026-08-28'
+    dependsOn: []
+    gate:
+      items:
+        - id: U1
+          verdict: pass
+          class: impl
+          evidenceRef: [9a7582b]
+          verifiedBy: axon
+
+  - id: track/full-install-linux
+    kind: track
+    zone: full-install
+    title: 'AppImage+deb full install simétrico a macOS (ADR-0046) — bloqueado por swap_app_dirs'
+    status: in_progress
+    dependsOn: []
+    milestones:
+      - id: track/full-install-linux/swap-appdirs-bug
+        title: 'CODIGO_VIVO - swap_app_dirs (linux.rs:192-212) renombra el directorio extraido entero sobre app_path: el runtime AppImage espera un fichero, recibe un directorio. Test install_swaps_the_bundle_in_place (linux.rs:353-378) sigue #[ignore]d con la justificacion original intacta. El handoff lane-swap-appdirs-2026-09-02.md pedia el fix + quitar el ignore + assert is_file(); VERIFICADO por git log/grep que nunca se aplico - los commits de sib/swap-appdirs son duplicados byte-identicos (mismo mensaje y autor-date, distinto hash por rebase) de los que si mergearon a main via la otra rama, y tratan del path pkexec/deb (THIRD-PARTY.md, examples/pkexec_smoke.rs), no de este bug. df2a891 (dangling, no alcanzable desde ninguna rama) tiene el mismo contenido que 7e58d3a (mergeado): la prueba de que el trabajo del lane nunca ocurrio.'
+        status: queued
+        dependsOn: []
+
+    gate:
+      items:
+        - id: U1
+          verdict: pass
+          class: impl
+          evidenceRef: [23939e56c8e3]
+          verifiedBy: axon
+
+        - id: U2
+          verdict: pass
+          class: live-evidence
+          evidenceRef: [0a6f05dc, df2a891f]
+          verifiedBy: axon
+
+  - id: track/partial-channel
+    kind: track
+    zone: partial-channel
+    title: 'A/B slot partial updater extraído de tpv-el-haido2 (ADR-0045 D10-D F2) — con deuda documentada'
+    status: in_progress
+    dependsOn: []
+    milestones:
+      - id: track/partial-channel/spa-only-gate
+        title: 'CODIGO_VIVO - stage() (apply.rs:88-147, gate en 132-137) aborta con BadArchive si el zip no trae index.html en la raiz, ANTES de crear el slot. Un binario, un directorio de hooks o una skill no pueden nunca pasar el canal parcial hoy.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/no-permissions-on-extract
+        title: 'CODIGO_VIVO con control positivo - extract_zip (apply.rs:61-88) escribe con File::create+io::copy, nunca lee entry.unix_mode() ni llama set_permissions: ningun extraido sale ejecutable. Grep del crate entero por set_permissions|PermissionsExt|unix_mode|0o755: 2 hits, AMBOS dentro de mod tests de linux.rs (lineas 323,333 - tar header de un fixture sintetico, no una syscall real). Control positivo confirmado: el patron SI encuentra algo, asi que el cero en apply.rs es real.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/mod-rs-overpromise
+        title: 'CODIGO_VIVO - src/install/partial/mod.rs:1-5 (doc-comment del modulo) dice que el canal parcial sirve ''frontend bundle, sidecar, assets, hooks/skills''; el codigo solo admite frontend (bloqueado por spa-only-gate y no-permissions-on-extract). Familia la-exageracion-compila: el doc promete una capacidad que ningun codigo ejecuta.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/bundle-reverted-no-listeners
+        title: 'CODIGO_VIVO (emisor) + NO_VERIFICADO (oyentes) - watchdog.rs:39 declara BUNDLE_REVERTED_EVENT (''ota://bundle-reverted''), emitido en watchdog.rs:121 via app.emit(). Cero listeners dentro de este crate (no le corresponde tenerlos, es una lib). El claim de ''cero oyentes en el consumidor'' viene del eje cross-repo del evidence doc (diseno-ota-parcial-034-2026-09-02.md) - NO reverificado por mi en este bootstrap porque el listener, si existe, vive en otro repo (wraith-linux/TPV).'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/no-full-cycle-smoke
+        title: 'CODIGO_VIVO - tests/partial_pipeline.rs cubre download->verify->stage->activate->rollback->invalidate en 1 test, pero JAMAS llama a watchdog::reconcile_boot; los 6 tests de watchdog.rs (lineas 140-222) nunca llaman a partial::stage/activate_staged. El ciclo publish->confirmar->sobrevivir-3-arranques->rollback-provocado no lo verifica ningun test - cada mitad se prueba por separado y el pegamento no lo mira nadie.'
+        status: queued
+        dependsOn: []
+
+    gate:
+      items:
+        - id: U1
+          verdict: pass
+          class: impl
+          evidenceRef: [8df41381]
+          verifiedBy: axon
+
+  - id: track/ci-hardening
+    kind: track
+    zone: ci
+    title: 'Matriz CI ubuntu+macos (lane-ci-linux-2026-09-02) — verde pero rota contra el comando real del workflow'
+    status: in_progress
+    dependsOn: [track/full-install-linux, track/partial-channel]
+    milestones:
+      - id: track/ci-hardening/cargo-test-broken-on-macos
+        title: 'CODIGO_VIVO, hallazgo propio de este bootstrap - .github/workflows/ci.yml corre ''cargo test'' (no --lib) en ambas patas. VERIFICADO en macOS: ''cargo test'' -> rc=101, E0433 en examples/pkexec_smoke.rs:18 (''could not find linux in full''), porque ese example llama a mks_ota::install::full::linux sin cfg(target_os), modulo que no existe en macOS. El commit que anadio el example (df2a891/7e58d3a) dice explicitamente ''examples/pkexec_smoke.rs queda fuera de cargo test a proposito'' pero no aplico ningun mecanismo real para lograrlo. La verificacion de la lane ci-linux (commit aeb4e6b) contrasto 54 (macOS) vs 57+1 (Linux), que son los numeros de ''cargo test --lib'' - el comando que el guard probo no es el que el workflow ejecuta de verdad. Repo 9 commits por delante de origin/main sin push: este workflow roto aun no ha corrido en GitHub Actions.'
+        status: queued
+        dependsOn: []
+
+    gate:
+      items:
+        - id: U1
+          verdict: pass
+          class: live-evidence
+          evidenceRef: [aeb4e6b2]
+          verifiedBy: axon
+
+decisions:
+  - id: dec-0001
+    status: locked
+    title: >-
+      Axon bootstrap: SSOT docs/roadmap.model.yml, mutaciones solo vía axon CLI
+      (doc: docs/decisions/dec-0001-axon-bootstrap.md)

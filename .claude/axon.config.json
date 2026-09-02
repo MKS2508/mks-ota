@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "project": "mks-ota",
+  "roadmapModel": "docs/roadmap.model.yml",
+  "adrDir": "docs/adr/",
+  "docs": {
+    "generatedRoadmap": "docs/ROADMAP.md",
+    "progressLog": "docs/progress-log.md",
+    "decisionsDir": "docs/decisions/",
+    "handoffsDir": "docs/handoffs/"
+  },
+  "tooling": {
+    "cli": "bunx @mks2508/axon",
+    "guard": "bunx @mks2508/axon gen --out docs --check",
+    "mutations": "solo vía axon CLI — edición manual del modelo prohibida (dec-0001)"
+  },
+  "bootstrapped": "2026-09-03"
+}

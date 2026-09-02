@@ -4,3 +4,6 @@
 # (wraith-linux, tpv-el-haido2). Each consumer's own Cargo.lock is what
 # pins versions for a build; committing one here would just go stale.
 Cargo.lock
+
+# axon CLI's own local backup of .claude/axon.config.json — not part of the SSOT.
+.claude/.axon-config-prev.json
