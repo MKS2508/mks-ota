@@ -1,0 +1,33 @@
+# The Linux half of `src/install/full/` is `#[cfg(target_os = "linux")]`,
+# so a macOS-only CI run never compiles it — the exact gap that shipped a
+# broken test module undetected (see docs/handoffs/lane-ci-linux-2026-09-02.md).
+# Hence the two-platform matrix: each job guards what the other cannot see.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A red Linux job must not cancel macOS (and vice versa) — the whole
+      # point of the matrix is comparing both results.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned, not floating `stable`: this crate produces installers.
+      # 1.98 is the toolchain the Linux suite was verified against
+      # (rust:1.98-slim container, 57 passed / 0 failed / 1 ignored).
+      - uses: dtolnay/rust-toolchain@1.98
+
+      # Caches ~/.cargo registry + per-job target/ keyed on Cargo.toml hash.
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test
