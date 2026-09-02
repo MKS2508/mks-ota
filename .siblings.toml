@@ -1,0 +1,34 @@
+# .siblings.toml — lanes para la CLI `siblings` (skill sibling-dispatch).
+#  globs   = archivos que la lane toca. DEBEN ser disjuntos entre lanes (lo valida `up`).
+#  model   = cl mode (glm / minimax — mano de obra barata).
+#  agent   = SIEMPRE "task-executor" para lanes que implementan.
+#
+# Creado 2026-09-02. Antes no existía: este repo se despachaba con agentes en el working
+# tree directo, y eso no escala a dos lanes a la vez (colisión en git y en target/).
+
+# ══ LANE CI-LINUX (2026-09-02) — la suite nunca ha corrido en Linux ═══════════════════
+# SSOT (mks-agentics): track/runner-product/ota-linux-nunca-compilo
+# src/install/full/linux.rs está tras cfg(target_os="linux") y aquí se trabaja en Mac, así
+# que el `cargo test` del Mac salía VERDE porque el módulo entero era invisible — y de hecho
+# ni compilaba (dos E0308 en su propio módulo de tests, arreglados el 2026-09-02).
+# Un CI solo-macOS no puede cazar esto por construcción.
+[lanes.ci-linux]
+globs   = [".github/**"]
+copy    = []
+install = false
+base    = "main"
+model   = "glm"
+agent   = "task-executor"
+
+# ══ LANE SWAP-APPDIRS (2026-09-02) — swap_app_dirs rompe la instalación AppImage ═══════
+# SSOT (mks-agentics): track/runner-product/swap-app-dirs-rompe-appimage
+# Renombra el directorio extraído entero sobre app_path, así que app_path acaba siendo un
+# DIRECTORIO en vez del fichero .AppImage que el runtime espera. El test que lo caza está
+# apagado con #[ignore] y el bug vivía dentro de ese atributo, sin ticket.
+[lanes.swap-appdirs]
+globs   = ["src/install/full/linux.rs"]
+copy    = []
+install = false
+base    = "main"
+model   = "minimax"
+agent   = "task-executor"
