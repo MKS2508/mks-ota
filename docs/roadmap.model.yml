@@ -153,6 +153,7 @@ nodes:
         title: 'TERCERA PUERTA SIN CERRAR, escalada por el ejecutor de staged-invalidation en vez de decidirla el solo - rollback() (apply.rs:195-207) monta el slot "previous" y le pone verified=true SIN ningun gate, y ese slot "previous" no registra en ningun sitio contra que nativo se construyo. Las dos puertas que cierra la lane (invalidate en el arranque, activate_staged al montar) NO cubren esta. El estado que la hace alcanzable es exactamente el especimen de waxin: previous poblado, active null. MITIGA SOLO: se autocura al siguiente arranque porque native_version_at_swap no se restaura, asi que la ventana no es permanente. NO SE TOCO a proposito - el contrato definia dos puertas y ampliar scope por cuenta propia es rediseñar. El arreglo natural es darle a "previous" su propio sello, mismo patron que native_version_at_stage.'
         status: queued
         dependsOn: []
+
     gate:
       items:
         - id: U1
