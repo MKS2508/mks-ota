@@ -6,15 +6,14 @@
 //!     cargo run --release --example pkexec_smoke -- /path/to/real.deb
 //!
 //! Prints the `Result` from `install()` and exits non-zero on `Err`.
-use std::path::PathBuf;
-
+#[cfg(target_os = "linux")]
 fn main() {
+    use std::path::PathBuf;
     let archive = std::env::args().nth(1).expect("usage: pkexec_smoke <path-to-deb>");
     let archive = PathBuf::from(archive);
     // Irrelevant for the deb branch (only used by the AppImage branch), but
     // `install()` requires a value.
     let app_path = PathBuf::from("/tmp/unused-app-path");
-
     match mks_ota::install::full::linux::install(&archive, &app_path) {
         Ok(()) => println!("install() returned Ok(())"),
         Err(e) => {
@@ -22,4 +21,10 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("pkexec_smoke is only meaningful on Linux (depends on install::full::linux)");
+    std::process::exit(1);
 }
