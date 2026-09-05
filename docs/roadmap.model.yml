@@ -129,7 +129,8 @@ nodes:
 
       - id: track/partial-channel/staged-huerfano-sobrevive-al-cambio-de-nativo
         title: 'CODIGO_VIVO con especimen real - invalidate_if_native_changed (slots.rs:99-126) sale por early-return en :101-103 si active.is_none() y NUNCA toca staged/staged_version. Un update nativo deja el staged intacto, y activate_staged (apply.rs:153) no comprueba contra que nativo se construyo: no existe campo native_version_at_stage. ESPECIMEN: la instalacion viva de waxin tiene ahora mismo state.json = {active:null, previous:5668.., staged:5668.., staged_version:''2026.9.5-4'', native_version_at_swap:null} con el nativo en 0.4.4 - ''wraith-ota activate'' hoy montaria ese frontend sobre 0.4.4. AGRAVANTE: el test slots.rs:248 PINTA EL BUG COMO CORRECTO (''Idempotent: with no active slot there is nothing to invalidate'') - misma familia que el test que fijaba PARTIAL_NATIVE_MAX en el consumidor: la suite verde ES el mecanismo por el que el bug sobrevive.'
-        status: queued
+        status: done
+        completedDate: '2026-09-05'
         dependsOn: []
 
       - id: track/partial-channel/l6-citado-en-codigo-no-existe-en-ningun-doc
@@ -139,6 +140,11 @@ nodes:
 
       - id: track/partial-channel/stage-borra-el-directorio-que-es-previous
         title: 'CODIGO_VIVO, riesgo acotado - stage() (apply.rs:139) hace remove_dir_all(&final_dir) antes del rename, y final_dir es el slot id, que es content-addressed (slot_id(&actual_sha), apply.rs:116). Re-stagear bytes identicos a un slot que sigue siendo ''previous'' borra el destino del rollback y lo repone por rename. Ventana de crash pequena y el contenido que aterriza es identico, por eso NO es P0 - pero el rollback depende de un directorio que otra funcion borra sin mirar el state. Especimen: el state vivo de waxin tiene previous == staged == 5668.., que es exactamente esta colision.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/el-suite-depende-de-un-fixture-remoto-mutable
+        title: 'CODIGO_VIVO con medicion - 9 de 54 tests de ''cargo test --lib'' estan ROJOS y no es codigo nuestro: download::tests (4), verify::tests (3) e install::full::macos::tests (2) comparten un fixture que se DESCARGA EN RUNTIME de una URL pineada, y el hub responde 404. Medido: curl a /api/components/wraith-linux/download/0.1.0/darwin/aarch64/Wraith.app.tar.gz -> http=404, size=50; el ''artefacto'' que aterriza en el tmpdir son los 50 bytes del cuerpo del error ({"error":"File not found"}), de ahi el ''invalid gzip header''. NO es bloqueo de red: el curl sale rc=0 y el hub contesta. Ese artefacto simplemente ya no esta publicado (encaja con el DROP TABLE releases del M6 del hub, 28-ago). Control positivo del instrumento: el mismo cargo test --lib filtrado a install::partial da rc=0, o sea el runner sabe dar verde. || POR QUE ES DEUDA Y NO ANECDOTA: un suite que depende de un artefacto remoto MUTABLE se pone rojo cuando alguien de otro repo borra algo, y su rojo no dice nada sobre este codigo. Peor: normaliza el rojo, y un suite cronicamente rojo deja de discriminar — nadie mira los 9 y el dia que sean 10 tampoco. Opciones: fixture local commiteado (bytes en tests/fixtures, que ya es el patron del canal parcial), o el test se salta explicito con motivo cuando el fetch falla, NUNCA un ignore mudo. || Verificado como PREEXISTENTE, no regresion: la lista de nombres de los 9 fallos es identica antes y despues de la lane staged-invalidation (diff de las dos listas, rc=0).'
         status: queued
         dependsOn: []
     gate:
