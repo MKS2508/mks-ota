@@ -127,6 +127,20 @@ nodes:
         status: queued
         dependsOn: []
 
+      - id: track/partial-channel/staged-huerfano-sobrevive-al-cambio-de-nativo
+        title: 'CODIGO_VIVO con especimen real - invalidate_if_native_changed (slots.rs:99-126) sale por early-return en :101-103 si active.is_none() y NUNCA toca staged/staged_version. Un update nativo deja el staged intacto, y activate_staged (apply.rs:153) no comprueba contra que nativo se construyo: no existe campo native_version_at_stage. ESPECIMEN: la instalacion viva de waxin tiene ahora mismo state.json = {active:null, previous:5668.., staged:5668.., staged_version:''2026.9.5-4'', native_version_at_swap:null} con el nativo en 0.4.4 - ''wraith-ota activate'' hoy montaria ese frontend sobre 0.4.4. AGRAVANTE: el test slots.rs:248 PINTA EL BUG COMO CORRECTO (''Idempotent: with no active slot there is nothing to invalidate'') - misma familia que el test que fijaba PARTIAL_NATIVE_MAX en el consumidor: la suite verde ES el mecanismo por el que el bug sobrevive.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/l6-citado-en-codigo-no-existe-en-ningun-doc
+        title: 'MARCADOR_HUERFANO - slots.rs:95 y mod.rs:17 citan ''Contract invariant L6'' como la autoridad de que el canal nativo invalida el parcial. Grep del repo entero por ''L6\b'' en md+yml+rs: 2 hits, LOS DOS son esos comentarios. Control positivo: el patron ''invariant L[0-9]'' encuentra slots.rs:95, o sea el grep funciona - el cero en docs/ es real. docs/adr/ solo tiene adr-0046-linux-full-install.md. El comentario cita un contrato que no existe en este repo (vive, si acaso, en el consumidor). Familia marcadores-sin-ancla: el lector tira del id y no encuentra medicion.'
+        status: queued
+        dependsOn: []
+
+      - id: track/partial-channel/stage-borra-el-directorio-que-es-previous
+        title: 'CODIGO_VIVO, riesgo acotado - stage() (apply.rs:139) hace remove_dir_all(&final_dir) antes del rename, y final_dir es el slot id, que es content-addressed (slot_id(&actual_sha), apply.rs:116). Re-stagear bytes identicos a un slot que sigue siendo ''previous'' borra el destino del rollback y lo repone por rename. Ventana de crash pequena y el contenido que aterriza es identico, por eso NO es P0 - pero el rollback depende de un directorio que otra funcion borra sin mirar el state. Especimen: el state vivo de waxin tiene previous == staged == 5668.., que es exactamente esta colision.'
+        status: queued
+        dependsOn: []
     gate:
       items:
         - id: U1
