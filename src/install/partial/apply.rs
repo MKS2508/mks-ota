@@ -95,12 +95,17 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), OtaError> {
 /// signature. Decompressing is already executing the decision to trust the
 /// content — it must never be the thing that discovers a bad artifact.
 ///
+/// `native_version` is stamped on the slot so that whoever activates it can
+/// tell which binary the artifact was picked for; an artifact can sit staged
+/// across a native update, and after one it is no longer the right artifact.
+///
 /// @returns The id of the staged slot.
 pub fn stage(
     app_data_dir: &Path,
     latest: &HubLatest,
     zip_path: &Path,
     pubkey: &str,
+    native_version: &str,
 ) -> Result<String, OtaError> {
     let actual_sha = sha256_of_file(zip_path)?;
     if let Some(expected) = latest.sha256_hex() {
@@ -142,6 +147,7 @@ pub fn stage(
     let mut state = slots::load_state(app_data_dir);
     state.staged = Some(id.clone());
     state.staged_version = Some(latest.version.clone());
+    state.native_version_at_stage = Some(native_version.to_string());
     slots::save_state(app_data_dir, &state).map_err(OtaError::StateIo)?;
     Ok(id)
 }
@@ -150,14 +156,31 @@ pub fn stage(
 ///
 /// The slot is marked unverified — until the new frontend confirms
 /// `app-ready` it is not considered good.
+///
+/// The artifact is only mounted on the binary it was downloaded for. Startup
+/// already drops orphan slots, but the CLI can activate without the app ever
+/// restarting, so the check is repeated at the moment it would take effect.
+/// A slot with no recorded native (staged before the field existed) cannot be
+/// vouched for and is refused rather than assumed current. The rejection
+/// leaves the state on disk untouched: refusing to mount an artifact is not a
+/// reason to delete it.
 pub fn activate_staged(app_data_dir: &Path, native_version: &str) -> Result<String, OtaError> {
     let mut state = slots::load_state(app_data_dir);
     let Some(staged) = state.staged.take() else {
         return Err(OtaError::NothingStaged);
     };
 
+    if state.native_version_at_stage.as_deref() != Some(native_version) {
+        return Err(OtaError::StagedForAnotherNative {
+            staged_version: state.staged_version.unwrap_or_else(|| "unknown".into()),
+            staged_for: state.native_version_at_stage.unwrap_or_else(|| "unknown".into()),
+            native: native_version.to_string(),
+        });
+    }
+
     state.previous = state.active.take();
     state.active_version = state.staged_version.take();
+    state.native_version_at_stage = None;
     state.active = Some(staged.clone());
     state.verified = false;
     state.boot_attempts = 0;
@@ -216,7 +239,10 @@ pub fn prune(app_data_dir: &Path) -> Result<usize, OtaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::partial::testkit::{hex_of, signed_latest, tmpdir, write_file, zip_with, TestKey};
+    use crate::install::partial::testkit::{
+        hex_of, signed_latest, tmpdir, write_file, write_specimen_state, zip_with, TestKey,
+        SPECIMEN_NATIVE,
+    };
 
     #[test]
     fn slot_id_rejects_a_hash_it_cannot_use() {
@@ -234,12 +260,33 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap();
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
         let state = slots::load_state(&dir);
         assert_eq!(state.staged.as_deref(), Some(id.as_str()));
         assert_eq!(state.staged_version.as_deref(), Some("0.3.0"));
         assert!(state.active.is_none(), "stage must not activate anything");
+        assert_eq!(state.native_version_at_stage.as_deref(), Some("0.2.12"));
         assert!(slots::bundles_root(&dir).join(&id).join("index.html").is_file());
+    }
+
+    #[test]
+    fn a_staged_slot_survives_a_startup_on_the_binary_that_staged_it() {
+        // The other half of dropping orphan staged slots: stage, restart,
+        // activate is the normal path. If startup ate every staged slot the
+        // partial channel could never deliver anything.
+        let dir = tmpdir("staged-survives");
+        let zip = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let latest = signed_latest(&zip, &key, "0.3.0");
+        let zip_path = write_file(&dir, "frontend.zip", &zip);
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
+
+        assert!(
+            !slots::invalidate_if_native_changed(&dir, "0.2.12"),
+            "the binary that staged it is the one running: nothing to invalidate"
+        );
+        assert_eq!(slots::load_state(&dir).staged.as_deref(), Some(id.as_str()));
+        assert_eq!(activate_staged(&dir, "0.2.12").unwrap(), id);
     }
 
     #[test]
@@ -251,7 +298,7 @@ mod tests {
         let other = zip_with(&[("index.html", b"<html>different content")]);
         let zip_path = write_file(&dir, "frontend.zip", &other);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::ChecksumMismatch { .. }), "got {err:?}");
         // Nothing on disk: verification happens before the destination is
         // touched.
@@ -271,7 +318,7 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let err = stage(&dir, &latest, &zip_path, &other_key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &other_key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::UnexpectedKeyId), "got {err:?}");
     }
 
@@ -293,7 +340,7 @@ mod tests {
         latest.sha256 = format!("sha256:{}", hex_of(&tampered));
         let zip_path = write_file(&dir, "frontend.zip", &tampered);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::InvalidSignature), "got {err:?}");
     }
 
@@ -305,7 +352,7 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::BadArchive(_)), "got {err:?}");
         assert!(!dir.join("outside.txt").exists());
     }
@@ -319,7 +366,7 @@ mod tests {
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
         assert!(matches!(
-            stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err(),
+            stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err(),
             OtaError::BadArchive(_)
         ));
     }
@@ -331,7 +378,7 @@ mod tests {
         let key = TestKey::generate();
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
-        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap();
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
 
         let activated = activate_staged(&dir, "0.2.12").unwrap();
         assert_eq!(activated, id);
@@ -351,6 +398,44 @@ mod tests {
             activate_staged(&dir, "0.2.12").unwrap_err(),
             OtaError::NothingStaged
         ));
+    }
+
+    #[test]
+    fn the_installed_specimen_is_not_mounted_over_a_binary_it_never_saw() {
+        // Same state read off a real installation as the startup test, taken
+        // through the other door: the CLI, which activates without the app
+        // having restarted and so never runs the startup invalidation.
+        let dir = tmpdir("specimen-activate");
+        write_specimen_state(&dir);
+
+        let err = activate_staged(&dir, SPECIMEN_NATIVE).unwrap_err();
+        assert!(matches!(err, OtaError::StagedForAnotherNative { .. }), "got {err:?}");
+
+        // The message is the whole of what the CLI user gets: both versions
+        // have to be in it or there is nothing to act on.
+        let shown = err.to_string();
+        assert!(shown.contains(SPECIMEN_NATIVE), "got {shown:?}");
+        assert!(shown.contains("2026.9.5-4"), "got {shown:?}");
+
+        // Refusing is not deleting — startup is what cleans up.
+        assert!(slots::load_state(&dir).staged.is_some());
+    }
+
+    #[test]
+    fn a_slot_staged_by_an_older_binary_is_refused() {
+        let dir = tmpdir("stale-seal");
+        let zip = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let latest = signed_latest(&zip, &key, "0.3.0");
+        let zip_path = write_file(&dir, "frontend.zip", &zip);
+        stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
+
+        let err = activate_staged(&dir, "0.2.13").unwrap_err();
+        assert!(matches!(err, OtaError::StagedForAnotherNative { .. }), "got {err:?}");
+        assert!(
+            slots::load_state(&dir).active.is_none(),
+            "a refused activation must not have swapped what is served"
+        );
     }
 
     #[test]

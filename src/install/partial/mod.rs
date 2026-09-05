@@ -46,6 +46,35 @@ pub(crate) mod testkit {
         dir
     }
 
+    /// The `state.json` of a real installation, read on 2026-09-05 from
+    /// `~/Library/Application Support/systems.mks.wraith/bundles/`, running a
+    /// 0.4.4 native binary. Written as raw text, not as a `SlotState`: the
+    /// point is a file produced by a build that had no
+    /// `native_version_at_stage`, so the missing key is part of the fixture.
+    ///
+    /// `previous` and `staged` being the same id is not a typo — slot ids are
+    /// content-addressed and the same artifact was staged twice.
+    pub const INSTALLED_SPECIMEN: &str = r#"{
+      "active": null,
+      "previous": "566808921497e75011e4dbc053b7a1cf",
+      "staged": "566808921497e75011e4dbc053b7a1cf",
+      "staged_version": "2026.9.5-4",
+      "active_version": null,
+      "verified": false,
+      "boot_attempts": 0,
+      "native_version_at_swap": null
+    }"#;
+
+    /// The native binary that installation is actually running.
+    pub const SPECIMEN_NATIVE: &str = "0.4.4";
+
+    /// Lays [`INSTALLED_SPECIMEN`] down in a throwaway dir.
+    pub fn write_specimen_state(dir: &std::path::Path) {
+        let root = crate::install::partial::slots::bundles_root(dir);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("state.json"), INSTALLED_SPECIMEN).unwrap();
+    }
+
     pub fn zip_with(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
         {

@@ -1,6 +1,6 @@
 //! End-to-end partial-install pipeline against a REAL signed fixture:
 //! download -> verify (both gates) -> stage -> activate -> rollback ->
-//! invalidate-on-native-change.
+//! invalidate-on-native-change -> refuse-a-slot-staged-for-another-native.
 //!
 //! The fixture under `tests/fixtures/partial/` was produced by the real
 //! publisher toolchain, not by this code: the zip comes from `zip` over a
@@ -21,6 +21,7 @@ use std::thread;
 use mks_ota::download;
 use mks_ota::install::partial;
 use mks_ota::manifest::HubLatest;
+use mks_ota::OtaError;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -89,7 +90,7 @@ fn download_verify_stage_activate_rollback_invalidate() {
     );
 
     // ── stage: both gates over the on-disk bytes, no activation ──────────
-    let id = partial::stage(&dir, &latest, &dest, &pubkey)
+    let id = partial::stage(&dir, &latest, &dest, &pubkey, "0.2.12")
         .expect("the real signed artifact passes both gates");
     let staged = partial::load_state(&dir);
     assert_eq!(staged.staged.as_deref(), Some(id.as_str()));
@@ -124,7 +125,7 @@ fn download_verify_stage_activate_rollback_invalidate() {
     assert!(partial::load_state(&dir).active.is_none());
 
     // ── native invalidation: re-stage, re-activate, bump the binary ──────
-    let id2 = partial::stage(&dir, &latest, &dest, &pubkey).expect("re-stage the same artifact");
+    let id2 = partial::stage(&dir, &latest, &dest, &pubkey, "0.2.12").expect("re-stage the same artifact");
     assert_eq!(id2, id, "same content hashes to the same slot id");
     partial::activate_staged(&dir, "0.2.12").unwrap();
     assert!(partial::load_state(&dir).active.is_some());
@@ -132,4 +133,31 @@ fn download_verify_stage_activate_rollback_invalidate() {
     let after = partial::load_state(&dir);
     assert!(after.active.is_none(), "a native update drops the partial slot");
     assert_eq!(after.previous.as_deref(), Some(id.as_str()));
+
+    // ── the seal, both doors ─────────────────────────────────────────────
+    // Queued on one binary, and the binary moves on before it is activated.
+    partial::stage(&dir, &latest, &dest, &pubkey, "0.2.13").expect("stage on the binary of the day");
+
+    // Door one, the CLI: activates without the app having restarted, so it
+    // never passes through the startup invalidation below.
+    let refused = partial::activate_staged(&dir, "0.2.14").unwrap_err();
+    assert!(
+        matches!(refused, OtaError::StagedForAnotherNative { .. }),
+        "got {refused:?}"
+    );
+    assert!(
+        partial::load_state(&dir).active.is_none(),
+        "the refused artifact was not mounted"
+    );
+
+    // Door two, the app: startup drops the orphan outright, so the CLI has
+    // nothing left to refuse.
+    assert!(partial::invalidate_if_native_changed(&dir, "0.2.14"));
+    let swept = partial::load_state(&dir);
+    assert!(swept.staged.is_none());
+    assert!(swept.staged_version.is_none());
+    assert!(matches!(
+        partial::activate_staged(&dir, "0.2.14").unwrap_err(),
+        OtaError::NothingStaged
+    ));
 }
