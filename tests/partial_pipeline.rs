@@ -89,7 +89,7 @@ fn download_verify_stage_activate_rollback_invalidate() {
     );
 
     // ── stage: both gates over the on-disk bytes, no activation ──────────
-    let id = partial::stage(&dir, &latest, &dest, &pubkey)
+    let id = partial::stage(&dir, &latest, &dest, &pubkey, "0.2.12")
         .expect("the real signed artifact passes both gates");
     let staged = partial::load_state(&dir);
     assert_eq!(staged.staged.as_deref(), Some(id.as_str()));
@@ -124,7 +124,7 @@ fn download_verify_stage_activate_rollback_invalidate() {
     assert!(partial::load_state(&dir).active.is_none());
 
     // ── native invalidation: re-stage, re-activate, bump the binary ──────
-    let id2 = partial::stage(&dir, &latest, &dest, &pubkey).expect("re-stage the same artifact");
+    let id2 = partial::stage(&dir, &latest, &dest, &pubkey, "0.2.12").expect("re-stage the same artifact");
     assert_eq!(id2, id, "same content hashes to the same slot id");
     partial::activate_staged(&dir, "0.2.12").unwrap();
     assert!(partial::load_state(&dir).active.is_some());

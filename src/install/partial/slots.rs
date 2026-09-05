@@ -49,6 +49,14 @@ pub struct SlotState {
     /// ends up talking to new commands. The native channel invalidates the
     /// partial one — [`invalidate_if_native_changed`].
     pub native_version_at_swap: Option<String>,
+    /// Native binary version the staged artifact was downloaded against.
+    ///
+    /// The swap version above only records which binary *activated* a slot,
+    /// so a queued artifact used to survive every native update and then
+    /// activate on top of a binary it was never built for. `None` means the
+    /// artifact was staged before this field existed: there is no way to tell
+    /// what it targets, so it is treated as stale rather than trusted.
+    pub native_version_at_stage: Option<String>,
 }
 
 /// Root of the slots inside the app data dir.
@@ -90,35 +98,53 @@ pub fn active_dir(app_data_dir: &Path, state: &SlotState) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Deactivates the active slot if a different native binary installed it.
+/// Drops the active and the staged slot if a different native binary put
+/// them there.
 ///
 /// Runs at startup, before serving anything. Contract invariant L6: the
 /// native channel invalidates the partial one.
 ///
-/// @returns `true` if something was deactivated (the state is persisted).
+/// The two slots are independent decisions. A staged artifact is not being
+/// served yet, but it is the next thing that will be, and it was downloaded
+/// for whatever binary was running at the time — leaving it queued across a
+/// native update just defers serving the mismatch until the next activation.
+///
+/// @returns `true` if something was dropped (the state is persisted).
 pub fn invalidate_if_native_changed(app_data_dir: &Path, native_version: &str) -> bool {
     let mut state = load_state(app_data_dir);
-    if state.active.is_none() {
+    if state.active.is_none() && state.staged.is_none() {
         return false;
     }
 
-    let matches = state
-        .native_version_at_swap
-        .as_deref()
-        .is_some_and(|v| v == native_version);
-    if matches {
-        return false;
+    let mut dropped = false;
+
+    if state.active.is_some() && state.native_version_at_swap.as_deref() != Some(native_version) {
+        eprintln!(
+            "[ota] native binary changed ({:?} -> {native_version}); dropping the active slot",
+            state.native_version_at_swap
+        );
+        state.previous = state.active.take();
+        state.active_version = None;
+        state.verified = false;
+        state.boot_attempts = 0;
+        state.native_version_at_swap = None;
+        dropped = true;
     }
 
-    eprintln!(
-        "[ota] native binary changed ({:?} -> {native_version}); dropping the active slot",
-        state.native_version_at_swap
-    );
-    state.previous = state.active.take();
-    state.active_version = None;
-    state.verified = false;
-    state.boot_attempts = 0;
-    state.native_version_at_swap = None;
+    if state.staged.is_some() && state.native_version_at_stage.as_deref() != Some(native_version) {
+        eprintln!(
+            "[ota] staged artifact was downloaded for {:?}, not {native_version}; dropping it",
+            state.native_version_at_stage
+        );
+        state.staged = None;
+        state.staged_version = None;
+        state.native_version_at_stage = None;
+        dropped = true;
+    }
+
+    if !dropped {
+        return false;
+    }
     if let Err(err) = save_state(app_data_dir, &state) {
         eprintln!("[ota] could not persist the invalidation: {err}");
     }
@@ -157,6 +183,7 @@ pub fn resolve_within(root: &Path, request_path: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::partial::testkit;
 
     fn tmpdir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mks-ota-slots-{name}"));
@@ -244,8 +271,47 @@ mod tests {
         assert!(state.active_version.is_none());
         assert_eq!(state.previous.as_deref(), Some("old-bundle"));
 
-        // Idempotent: with no active slot there is nothing to invalidate.
+        // This assertion used to read `assert!(!invalidate(...))`, under a
+        // comment claiming that with no active slot there is nothing to
+        // invalidate. That is what the code did, not what it owed: a staged
+        // artifact left behind by another binary is exactly something to
+        // invalidate, and the assertion passing is why nobody noticed.
+        save_state(&dir, &SlotState {
+            staged: Some("queued-by-the-old-binary".into()),
+            staged_version: Some("0.1.5".into()),
+            ..load_state(&dir)
+        })
+        .unwrap();
+        assert!(invalidate_if_native_changed(&dir, "0.2.0"));
+        let state = load_state(&dir);
+        assert!(state.staged.is_none(), "an orphan staged slot is dropped even with no active one");
+        assert!(state.staged_version.is_none());
+
+        // Idempotent once both slots are gone — the honest version of the
+        // claim the old assertion was making.
         assert!(!invalidate_if_native_changed(&dir, "0.2.0"));
+    }
+
+    #[test]
+    fn the_installed_specimen_drops_its_orphan_staged() {
+        // Regression against a state read off a real installation: a bundle
+        // staged by an earlier binary, no active slot, and a native that has
+        // moved on since. `wraith-ota activate` would have mounted it.
+        let dir = tmpdir("specimen");
+        testkit::write_specimen_state(&dir);
+
+        assert!(
+            invalidate_if_native_changed(&dir, testkit::SPECIMEN_NATIVE),
+            "the staged bundle predates the running binary and must not survive startup"
+        );
+
+        let state = load_state(&dir);
+        assert!(state.staged.is_none());
+        assert!(state.staged_version.is_none());
+        // The active half of the decision was already settled — invalidating
+        // the staged one must not invent a slot or lose the rollback target.
+        assert!(state.active.is_none());
+        assert_eq!(state.previous.as_deref(), Some("566808921497e75011e4dbc053b7a1cf"));
     }
 
     #[test]

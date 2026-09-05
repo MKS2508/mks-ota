@@ -95,12 +95,17 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), OtaError> {
 /// signature. Decompressing is already executing the decision to trust the
 /// content — it must never be the thing that discovers a bad artifact.
 ///
+/// `native_version` is stamped on the slot so that whoever activates it can
+/// tell which binary the artifact was picked for; an artifact can sit staged
+/// across a native update, and after one it is no longer the right artifact.
+///
 /// @returns The id of the staged slot.
 pub fn stage(
     app_data_dir: &Path,
     latest: &HubLatest,
     zip_path: &Path,
     pubkey: &str,
+    native_version: &str,
 ) -> Result<String, OtaError> {
     let actual_sha = sha256_of_file(zip_path)?;
     if let Some(expected) = latest.sha256_hex() {
@@ -142,6 +147,7 @@ pub fn stage(
     let mut state = slots::load_state(app_data_dir);
     state.staged = Some(id.clone());
     state.staged_version = Some(latest.version.clone());
+    state.native_version_at_stage = Some(native_version.to_string());
     slots::save_state(app_data_dir, &state).map_err(OtaError::StateIo)?;
     Ok(id)
 }
@@ -234,12 +240,33 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap();
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
         let state = slots::load_state(&dir);
         assert_eq!(state.staged.as_deref(), Some(id.as_str()));
         assert_eq!(state.staged_version.as_deref(), Some("0.3.0"));
         assert!(state.active.is_none(), "stage must not activate anything");
+        assert_eq!(state.native_version_at_stage.as_deref(), Some("0.2.12"));
         assert!(slots::bundles_root(&dir).join(&id).join("index.html").is_file());
+    }
+
+    #[test]
+    fn a_staged_slot_survives_a_startup_on_the_binary_that_staged_it() {
+        // The other half of dropping orphan staged slots: stage, restart,
+        // activate is the normal path. If startup ate every staged slot the
+        // partial channel could never deliver anything.
+        let dir = tmpdir("staged-survives");
+        let zip = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let latest = signed_latest(&zip, &key, "0.3.0");
+        let zip_path = write_file(&dir, "frontend.zip", &zip);
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
+
+        assert!(
+            !slots::invalidate_if_native_changed(&dir, "0.2.12"),
+            "the binary that staged it is the one running: nothing to invalidate"
+        );
+        assert_eq!(slots::load_state(&dir).staged.as_deref(), Some(id.as_str()));
+        assert_eq!(activate_staged(&dir, "0.2.12").unwrap(), id);
     }
 
     #[test]
@@ -251,7 +278,7 @@ mod tests {
         let other = zip_with(&[("index.html", b"<html>different content")]);
         let zip_path = write_file(&dir, "frontend.zip", &other);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::ChecksumMismatch { .. }), "got {err:?}");
         // Nothing on disk: verification happens before the destination is
         // touched.
@@ -271,7 +298,7 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let err = stage(&dir, &latest, &zip_path, &other_key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &other_key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::UnexpectedKeyId), "got {err:?}");
     }
 
@@ -293,7 +320,7 @@ mod tests {
         latest.sha256 = format!("sha256:{}", hex_of(&tampered));
         let zip_path = write_file(&dir, "frontend.zip", &tampered);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::InvalidSignature), "got {err:?}");
     }
 
@@ -305,7 +332,7 @@ mod tests {
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
-        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err();
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
         assert!(matches!(err, OtaError::BadArchive(_)), "got {err:?}");
         assert!(!dir.join("outside.txt").exists());
     }
@@ -319,7 +346,7 @@ mod tests {
         let zip_path = write_file(&dir, "frontend.zip", &zip);
 
         assert!(matches!(
-            stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap_err(),
+            stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err(),
             OtaError::BadArchive(_)
         ));
     }
@@ -331,7 +358,7 @@ mod tests {
         let key = TestKey::generate();
         let latest = signed_latest(&zip, &key, "0.3.0");
         let zip_path = write_file(&dir, "frontend.zip", &zip);
-        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload()).unwrap();
+        let id = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
 
         let activated = activate_staged(&dir, "0.2.12").unwrap();
         assert_eq!(activated, id);
