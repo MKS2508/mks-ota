@@ -156,14 +156,31 @@ pub fn stage(
 ///
 /// The slot is marked unverified — until the new frontend confirms
 /// `app-ready` it is not considered good.
+///
+/// The artifact is only mounted on the binary it was downloaded for. Startup
+/// already drops orphan slots, but the CLI can activate without the app ever
+/// restarting, so the check is repeated at the moment it would take effect.
+/// A slot with no recorded native (staged before the field existed) cannot be
+/// vouched for and is refused rather than assumed current. The rejection
+/// leaves the state on disk untouched: refusing to mount an artifact is not a
+/// reason to delete it.
 pub fn activate_staged(app_data_dir: &Path, native_version: &str) -> Result<String, OtaError> {
     let mut state = slots::load_state(app_data_dir);
     let Some(staged) = state.staged.take() else {
         return Err(OtaError::NothingStaged);
     };
 
+    if state.native_version_at_stage.as_deref() != Some(native_version) {
+        return Err(OtaError::StagedForAnotherNative {
+            staged_version: state.staged_version.unwrap_or_else(|| "unknown".into()),
+            staged_for: state.native_version_at_stage.unwrap_or_else(|| "unknown".into()),
+            native: native_version.to_string(),
+        });
+    }
+
     state.previous = state.active.take();
     state.active_version = state.staged_version.take();
+    state.native_version_at_stage = None;
     state.active = Some(staged.clone());
     state.verified = false;
     state.boot_attempts = 0;
@@ -222,7 +239,10 @@ pub fn prune(app_data_dir: &Path) -> Result<usize, OtaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::partial::testkit::{hex_of, signed_latest, tmpdir, write_file, zip_with, TestKey};
+    use crate::install::partial::testkit::{
+        hex_of, signed_latest, tmpdir, write_file, write_specimen_state, zip_with, TestKey,
+        SPECIMEN_NATIVE,
+    };
 
     #[test]
     fn slot_id_rejects_a_hash_it_cannot_use() {
@@ -378,6 +398,44 @@ mod tests {
             activate_staged(&dir, "0.2.12").unwrap_err(),
             OtaError::NothingStaged
         ));
+    }
+
+    #[test]
+    fn the_installed_specimen_is_not_mounted_over_a_binary_it_never_saw() {
+        // Same state read off a real installation as the startup test, taken
+        // through the other door: the CLI, which activates without the app
+        // having restarted and so never runs the startup invalidation.
+        let dir = tmpdir("specimen-activate");
+        write_specimen_state(&dir);
+
+        let err = activate_staged(&dir, SPECIMEN_NATIVE).unwrap_err();
+        assert!(matches!(err, OtaError::StagedForAnotherNative { .. }), "got {err:?}");
+
+        // The message is the whole of what the CLI user gets: both versions
+        // have to be in it or there is nothing to act on.
+        let shown = err.to_string();
+        assert!(shown.contains(SPECIMEN_NATIVE), "got {shown:?}");
+        assert!(shown.contains("2026.9.5-4"), "got {shown:?}");
+
+        // Refusing is not deleting — startup is what cleans up.
+        assert!(slots::load_state(&dir).staged.is_some());
+    }
+
+    #[test]
+    fn a_slot_staged_by_an_older_binary_is_refused() {
+        let dir = tmpdir("stale-seal");
+        let zip = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let latest = signed_latest(&zip, &key, "0.3.0");
+        let zip_path = write_file(&dir, "frontend.zip", &zip);
+        stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
+
+        let err = activate_staged(&dir, "0.2.13").unwrap_err();
+        assert!(matches!(err, OtaError::StagedForAnotherNative { .. }), "got {err:?}");
+        assert!(
+            slots::load_state(&dir).active.is_none(),
+            "a refused activation must not have swapped what is served"
+        );
     }
 
     #[test]

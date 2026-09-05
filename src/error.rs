@@ -28,6 +28,11 @@ pub enum OtaError {
     #[error("nothing is staged to activate")]
     NothingStaged,
 
+    #[error(
+        "staged artifact {staged_version} was downloaded for native {staged_for}, but this binary is {native}; not activating it"
+    )]
+    StagedForAnotherNative { staged_version: String, staged_for: String, native: String },
+
     #[error("could not persist the slot state: {0}")]
     StateIo(String),
 
