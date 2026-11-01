@@ -223,19 +223,22 @@ fn install_deb_with_pkexec(deb: &Path) -> Result<(), OtaError> {
     Ok(())
 }
 
-/// Relaunches the app at `app_path` via `execve` of the new AppImage
-/// (AppImage case) or returns Ok(()) for the deb case (dpkg already queued
-/// the new version, the caller is expected to exit so the next launch
-/// picks it up).
+/// AppImage case: replaces the running process with the new AppImage at
+/// `app_path` (`execve`, same PID and arguments) and only returns if that
+/// fails. A spawned child would briefly run alongside the old instance, and
+/// launchers that sandbox the AppImage with `--die-with-parent` (NixOS
+/// `appimage-run`) kill it as soon as the old instance exits. Deb case:
+/// returns Ok(()) — dpkg already queued the new version, the caller is
+/// expected to exit so the next launch picks it up.
 pub fn relaunch(app_path: &Path) -> Result<(), OtaError> {
+    use std::os::unix::process::CommandExt;
     if std::env::var_os("APPIMAGE").is_none() {
-        // deb path — dpkg already queued the new binary; nothing to exec.
         return Ok(());
     }
-    // Replace current process with the new AppImage.
-    // Note: this only returns if execve fails.
-    std::process::Command::new(app_path).spawn()?;
-    Ok(())
+    let err = std::process::Command::new(app_path)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    Err(err.into())
 }
 
 #[cfg(test)]
@@ -417,17 +420,27 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_invokes_execve_without_erroring_synchronously() {
+    fn relaunch_returns_the_exec_error_and_keeps_the_process_when_exec_fails() {
+        // A successful exec would replace the test runner, so only the
+        // failure path is observable in-process.
         let _lock = ENV_LOCK.lock().unwrap();
         let _appimage = AppImageEnvGuard::set("/nonexistent-appimage-marker");
         let apps_dir = tempfile::tempdir().unwrap();
-        let app_path = make_current_appimage(apps_dir.path());
-        fs::write(&app_path, b"#!/bin/sh\necho ok\n").unwrap();
 
-        // `spawn()` only fails synchronously if the path is nonexistent or
-        // not executable; the execve itself is observed by a separate
-        // process — we just assert spawn itself doesn't error.
-        relaunch(&app_path).unwrap();
+        let err = relaunch(&apps_dir.path().join("missing.AppImage")).unwrap_err();
+        assert!(matches!(err, OtaError::Io(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn relaunch_is_a_no_op_for_deb_installs() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("APPIMAGE");
+        unsafe { std::env::remove_var("APPIMAGE") };
+        let result = relaunch(Path::new("/nonexistent"));
+        if let Some(v) = previous {
+            unsafe { std::env::set_var("APPIMAGE", v) };
+        }
+        result.unwrap();
     }
 
     #[test]
