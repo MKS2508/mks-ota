@@ -23,9 +23,30 @@ pub struct HubLatest {
     pub signature: String,
     /// ISO-8601.
     pub pub_date: String,
+    /// Compatibility window the publisher declared for the native binary
+    /// (`nativeMin` inclusive, `nativeMax` inclusive bound or range). Absent
+    /// or `null` on artifacts published without one: no gate.
+    #[serde(default)]
+    pub native_min: Option<String>,
+    #[serde(default)]
+    pub native_max: Option<String>,
 }
 
 impl HubLatest {
+    /// Whether this artifact may land on native binary `native`, per the
+    /// window in the manifest. The client applies it itself instead of
+    /// trusting the hub to have filtered.
+    pub fn accepts_native(&self, native: &str) -> Result<(), OtaError> {
+        match (&self.native_min, &self.native_max) {
+            (None, None) => Ok(()),
+            (min, max) => native_within_window(
+                native,
+                min.as_deref().unwrap_or("0.0.0"),
+                max.as_deref().unwrap_or("*"),
+            ),
+        }
+    }
+
     /// The hex digest, or `None` when the hub hasn't computed one
     /// (`"unknown"` on backfilled rows). sha256 is integrity/dedupe only —
     /// minisign is what authenticates (ADR-0045 D8, design §6.2).
@@ -92,8 +113,8 @@ fn parse_max(raw: &str) -> Result<semver::VersionReq, OtaError> {
 ///
 /// `min` is a concrete version compared with `>=`; `max` is an inclusive
 /// upper bound that also admits ranges (see [`parse_max`]). In the
-/// `components` channel the hub does not carry this window — the caller
-/// declares its own constants per release.
+/// `components` channel the window travels in the manifest — see
+/// [`HubLatest::accepts_native`].
 pub fn native_within_window(native: &str, min: &str, max: &str) -> Result<(), OtaError> {
     let native = semver::Version::parse(native)
         .map_err(|_| OtaError::BadVersion(native.to_string()))?;
@@ -125,6 +146,8 @@ mod tests {
             sha256: sha256.into(),
             signature: String::new(),
             pub_date: "2026-08-28T00:00:00Z".into(),
+            native_min: None,
+            native_max: None,
         }
     }
 
@@ -275,5 +298,46 @@ mod tests {
             native_within_window("not-semver", "0.1.0", "0.9.0").unwrap_err(),
             OtaError::BadVersion(_)
         ));
+    }
+
+    #[test]
+    fn the_window_is_read_from_the_hub_manifest_absent_null_or_set() {
+        let base = r#""component":"haido-frontend","version":"2026.11.1-1","url":"u","sha256":"sha256:unknown","signature":"s","pubDate":"2026-11-01T00:00:00Z""#;
+
+        let absent: HubLatest = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        assert_eq!((absent.native_min, absent.native_max), (None, None));
+
+        let null: HubLatest =
+            serde_json::from_str(&format!(r#"{{{base},"nativeMin":null,"nativeMax":null}}"#)).unwrap();
+        assert_eq!((null.native_min, null.native_max), (None, None));
+
+        let set: HubLatest =
+            serde_json::from_str(&format!(r#"{{{base},"nativeMin":"0.2.0","nativeMax":"0.2.x"}}"#)).unwrap();
+        assert_eq!(set.native_min.as_deref(), Some("0.2.0"));
+        assert_eq!(set.native_max.as_deref(), Some("0.2.x"));
+    }
+
+    #[test]
+    fn accepts_native_applies_whatever_part_of_the_window_was_declared() {
+        let window = |min: Option<&str>, max: Option<&str>| HubLatest {
+            native_min: min.map(Into::into),
+            native_max: max.map(Into::into),
+            ..sample("sha256:unknown")
+        };
+
+        assert!(window(None, None).accepts_native("0.0.1").is_ok(), "no window, no gate");
+
+        let both = window(Some("0.2.0"), Some("0.2.x"));
+        assert!(both.accepts_native("0.2.12").is_ok());
+        assert!(matches!(both.accepts_native("0.3.0").unwrap_err(), OtaError::Incompatible { .. }));
+        assert!(matches!(both.accepts_native("0.1.9").unwrap_err(), OtaError::Incompatible { .. }));
+
+        let only_min = window(Some("0.2.0"), None);
+        assert!(only_min.accepts_native("9.0.0").is_ok(), "open above");
+        assert!(only_min.accepts_native("0.1.0").is_err());
+
+        let only_max = window(None, Some("0.2.12"));
+        assert!(only_max.accepts_native("0.0.1").is_ok(), "open below");
+        assert!(only_max.accepts_native("0.2.13").is_err());
     }
 }

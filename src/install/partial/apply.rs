@@ -107,6 +107,8 @@ pub fn stage(
     pubkey: &str,
     native_version: &str,
 ) -> Result<String, OtaError> {
+    latest.accepts_native(native_version)?;
+
     let actual_sha = sha256_of_file(zip_path)?;
     if let Some(expected) = latest.sha256_hex() {
         if !actual_sha.eq_ignore_ascii_case(expected) {
@@ -287,6 +289,27 @@ mod tests {
         );
         assert_eq!(slots::load_state(&dir).staged.as_deref(), Some(id.as_str()));
         assert_eq!(activate_staged(&dir, "0.2.12").unwrap(), id);
+    }
+
+    #[test]
+fn an_artifact_outside_its_native_window_is_rejected_before_touching_disk() {
+        let dir = tmpdir("out-of-window");
+        let bytes = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let latest = HubLatest {
+            native_min: Some("0.3.0".into()),
+            native_max: Some("0.3.x".into()),
+            ..signed_latest(&bytes, &key, "0.3.0")
+        };
+        let zip_path = write_file(&dir, "frontend.zip", &bytes);
+
+        let err = stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
+        assert!(matches!(err, OtaError::Incompatible { .. }), "got {err:?}");
+        let root = slots::bundles_root(&dir);
+        let has_slots = fs::read_dir(&root)
+            .map(|d| d.flatten().any(|e| e.path().is_dir()))
+            .unwrap_or(false);
+        assert!(!has_slots);
     }
 
     #[test]
