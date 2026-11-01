@@ -10,7 +10,7 @@
 //! verify                -> minisign-verify: content + trusted-comment signature, streaming
 //! download              -> stream to a temp file, sha256 while streaming, Range/resume
 //! install::full::macos  -> extract + swap the .app, relaunch
-//! install::full::linux  -> hole (not implemented)
+//! install::full::linux  -> AppImage (raw or .tar.gz, atomic file swap) + deb (pkexec dpkg)
 //! install::partial      -> A/B slots in appDataDir: two gates, stage/activate, rollback (F2)
 //! protocol  [tauri]     -> custom URI scheme: active slot with embedded fallback (F2)
 //! watchdog              -> boot counter + hot-apply grace, auto-rollback (F2)

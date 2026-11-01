@@ -14,13 +14,11 @@
 
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use flate2::read::GzDecoder;
 use tar::Archive;
-use tempfile::TempDir;
 
 use crate::error::OtaError;
 
@@ -60,33 +58,48 @@ pub fn extract_app_bundle(archive: &Path, into: &Path) -> Result<(), OtaError> {
     Ok(())
 }
 
-/// Downloaded-and-verified install: extracts the archive next to the running
-/// AppImage, then renames the new AppImage on top of the current one
-/// (same-device check, no `osascript` fallback — Linux is POSIX and the
-/// AppImage is owned by the same user that runs it, no privilege
-/// escalation needed). If the running bundle was a deb (no `$APPIMAGE`),
-/// this resolves `archive` to an installable `.deb` and runs `pkexec dpkg
-/// -i` on it — the new binary takes effect on the next launch.
-pub fn install(archive: &Path, app_path: &Path) -> Result<(), OtaError> {
+/// Downloaded-and-verified install. AppImage case: `downloaded` is either
+/// the `.AppImage` itself (what `tauri build` emits and signs) or a
+/// `.tar.gz` carrying one; the new file is staged in the AppImage's own
+/// directory and renamed over it. `rename(2)` replaces the file atomically:
+/// the running process keeps the old inode mounted, and a crash leaves
+/// either the old or the new AppImage at `app_path`, never a mix. If the
+/// running bundle was a deb (no `$APPIMAGE`), this resolves `downloaded` to
+/// an installable `.deb` and runs `pkexec dpkg -i` on it — the new binary
+/// takes effect on the next launch.
+pub fn install(downloaded: &Path, app_path: &Path) -> Result<(), OtaError> {
     // deb path: no APPIMAGE means this was installed via dpkg.
     if std::env::var_os("APPIMAGE").is_none() {
-        let deb = resolve_deb_path(archive)?;
+        let deb = resolve_deb_path(downloaded)?;
         return install_deb_with_pkexec(&deb);
     }
 
     let dest_parent = app_path.parent().ok_or(OtaError::AppBundleNotFound)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".mks-ota-")
+        .tempdir_in(dest_parent)
+        .map_err(|e| permission_hint(e, dest_parent))?;
+    let new_appimage = staging.path().join("new.AppImage");
 
-    let extract_dir = pick_tmp_dir(dest_parent)?;
-    let new_app = extract_dir.path().join("new-appimage");
-    fs::create_dir_all(&new_app)?;
-    extract_app_bundle(archive, &new_app)?;
+    let magic = read_magic(downloaded)?;
+    if magic.starts_with(ELF_MAGIC) {
+        fs::copy(downloaded, &new_appimage)?;
+    } else if magic.starts_with(&GZIP_MAGIC) {
+        extract_appimage_from_tar_gz(downloaded, &new_appimage)?;
+    } else {
+        return Err(OtaError::BadFullArtifact(format!(
+            "{} is neither an AppImage nor a .tar.gz",
+            downloaded.display()
+        )));
+    }
 
-    let backup_dir = pick_tmp_dir(dest_parent)?;
-    let backup_app = backup_dir.path().join("previous-appimage");
-
-    swap_app_dirs(app_path, &new_app, &backup_app)
+    fs::set_permissions(&new_appimage, fs::metadata(app_path)?.permissions())?;
+    fs::File::open(&new_appimage)?.sync_all()?;
+    fs::rename(&new_appimage, app_path).map_err(|e| permission_hint(e, app_path))
 }
 
+/// Every AppImage is an ELF executable (type 2 runtime + squashfs payload).
+const ELF_MAGIC: &[u8] = b"\x7fELF";
 /// The `ar`-archive magic every real `.deb` starts with (`man 5 deb`).
 const DEB_MAGIC: &[u8] = b"!<arch>\n";
 /// gzip magic — what `downloaded` looks like when the hub's `latest` slot
@@ -104,18 +117,58 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// reaches `dpkg`, which would otherwise fail with a confusing "Errors
 /// were encountered while processing" instead of naming the real problem.
 fn resolve_deb_path(downloaded: &Path) -> Result<PathBuf, OtaError> {
-    let mut header = [0u8; 8];
-    let read = fs::File::open(downloaded)?.read(&mut header)?;
-    if header[..read].starts_with(DEB_MAGIC) {
+    let magic = read_magic(downloaded)?;
+    if magic.starts_with(DEB_MAGIC) {
         return Ok(downloaded.to_path_buf());
     }
-    if read >= 2 && header[..2] == GZIP_MAGIC {
+    if magic.starts_with(&GZIP_MAGIC) {
         return extract_deb_from_tar_gz(downloaded);
     }
     Err(OtaError::PrivilegedInstallFailed(format!(
         "{} is neither a .deb nor a .tar.gz — cannot install",
         downloaded.display()
     )))
+}
+
+/// The first bytes of `path`, enough to tell the artifact kinds apart
+/// (shorter if the file is).
+fn read_magic(path: &Path) -> Result<Vec<u8>, OtaError> {
+    let mut header = Vec::with_capacity(8);
+    fs::File::open(path)?.take(8).read_to_end(&mut header)?;
+    Ok(header)
+}
+
+/// Unpacks the single `.AppImage` entry of `archive` (a gzip tarball) to
+/// `dest`, wherever it sits inside the tarball.
+fn extract_appimage_from_tar_gz(archive: &Path, dest: &Path) -> Result<(), OtaError> {
+    let mut tar = Archive::new(GzDecoder::new(fs::File::open(archive)?));
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let is_appimage = entry
+            .path()?
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("appimage"));
+        if is_appimage && entry.header().entry_type().is_file() {
+            entry.unpack(dest)?;
+            return Ok(());
+        }
+    }
+    Err(OtaError::BadFullArtifact(format!(
+        "{} is a tar.gz with no .AppImage entry inside",
+        archive.display()
+    )))
+}
+
+/// Maps `PermissionDenied` to the actionable error: an AppImage can only
+/// replace itself from a directory its user can write to.
+fn permission_hint(e: std::io::Error, path: &Path) -> OtaError {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return OtaError::PrivilegedInstallFailed(format!(
+            "no write access to {}; the AppImage must live in a directory owned by the user running it",
+            path.display()
+        ));
+    }
+    e.into()
 }
 
 /// Extracts the single `.deb` entry out of `archive` (a gzip tarball), next
@@ -185,68 +238,9 @@ pub fn relaunch(app_path: &Path) -> Result<(), OtaError> {
     Ok(())
 }
 
-/// Moves `current` aside to `backup`, then moves `new_app` into `current`'s
-/// place. If the second rename fails, restores `backup` back to `current`
-/// before returning the original error — the app is left exactly as it was
-/// found, never half-swapped.
-fn swap_app_dirs(current: &Path, new_app: &Path, backup: &Path) -> Result<(), OtaError> {
-    if let Err(e) = fs::rename(current, backup) {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            return Err(OtaError::PrivilegedInstallFailed(format!(
-                "PermissionDenied on rename of {}. AppImage must be owned by the same user.",
-                current.display()
-            )));
-        }
-        return Err(e.into());
-    }
-    if let Err(e) = fs::rename(new_app, current) {
-        fs::rename(backup, current).map_err(|restore_err| {
-            OtaError::RollbackFailed(format!(
-                "install failed ({e}); restoring the previous version also failed: {restore_err}"
-            ))
-        })?;
-        return Err(e.into());
-    }
-    touch(current)?;
-    Ok(())
-}
-
-/// Refreshes the bundle's mtime so the AppImage runtime notices the change.
-fn touch(path: &Path) -> Result<(), OtaError> {
-    let status = Command::new("touch").arg(path).status()?;
-    if !status.success() {
-        return Err(OtaError::PrivilegedInstallFailed(format!("touch exited with {status}")));
-    }
-    Ok(())
-}
-
-/// Picks a tmpdir on the same device as `dest_parent` — the check
-/// `tauri-plugin-updater` has on Linux (`updater.rs:1064`,
-/// `TempDirNotOnSameMountPoint`). An AppImage on a different mount from the
-/// system temp dir would have its `rename` fail.
-fn pick_tmp_dir(dest_parent: &Path) -> Result<TempDir, OtaError> {
-    let dest_dev = fs::metadata(dest_parent)?.dev();
-    for candidate in [std::env::temp_dir(), dest_parent.to_path_buf()] {
-        if fs::metadata(&candidate).ok().map(|m| m.dev()) == Some(dest_dev) {
-            return tempfile::Builder::new()
-                .prefix("mks-ota-")
-                .tempdir_in(&candidate)
-                .map_err(OtaError::from);
-        }
-    }
-    Err(OtaError::CrossDeviceRename {
-        tmp_dev: fs::metadata(std::env::temp_dir())?.dev(),
-        dest_dev,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-        haystack.windows(needle.len()).any(|w| w == needle)
-    }
 
     /// `install()`/`install_deb_with_pkexec()` branch on process-wide env
     /// vars (`$APPIMAGE`, `$PATH`); tests that mutate either take this lock
@@ -349,73 +343,91 @@ mod tests {
         );
     }
 
+    /// An existing executable AppImage at `apps_dir/TestApp.AppImage`.
+    fn make_current_appimage(apps_dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let app_path = apps_dir.join("TestApp.AppImage");
+        fs::write(&app_path, b"old-appimage-content").unwrap();
+        fs::set_permissions(&app_path, fs::Permissions::from_mode(0o755)).unwrap();
+        app_path
+    }
+
+    /// `app_path` is a regular executable file holding exactly `expected`,
+    /// and the staging directory left nothing behind next to it.
+    fn assert_swapped(app_path: &Path, expected: &[u8]) {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = fs::metadata(app_path).unwrap();
+        assert!(meta.is_file(), "the AppImage must stay a file");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        assert_eq!(fs::read(app_path).unwrap(), expected);
+        let leftovers: Vec<_> = fs::read_dir(app_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".mks-ota-"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging dir left behind: {leftovers:?}");
+    }
+
     #[test]
-    #[ignore = "pre-existing bug, out of scope here: swap_app_dirs renames the whole \
-        extracted directory onto app_path, so app_path becomes a directory instead of \
-        the .AppImage file the AppImage runtime expects — unrelated to the deb/pkexec \
-        fix this test module was touched for; reported separately"]
-    fn install_swaps_the_bundle_in_place() {
+    fn install_replaces_the_appimage_with_a_raw_appimage() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _appimage = AppImageEnvGuard::set("/nonexistent-appimage-marker");
 
         let apps_dir = tempfile::tempdir().unwrap();
-        let app_path = apps_dir.path().join("TestApp.AppImage");
-        // Create a fake existing AppImage
-        fs::write(&app_path, b"old-appimage-content").unwrap();
+        let app_path = make_current_appimage(apps_dir.path());
+        let downloads = tempfile::tempdir().unwrap();
+        let downloaded = downloads.path().join("TestApp_0.2.0_amd64.AppImage");
+        let new_contents = b"\x7fELF\x02\x01\x01\x00AI\x02-new-appimage";
+        fs::write(&downloaded, new_contents).unwrap();
 
-        let archive = make_appimage_fixture(apps_dir.path());
+        install(&downloaded, &app_path).unwrap();
+
+        assert_swapped(&app_path, new_contents);
+    }
+
+    #[test]
+    fn install_replaces_the_appimage_with_one_from_a_tar_gz() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _appimage = AppImageEnvGuard::set("/nonexistent-appimage-marker");
+
+        let apps_dir = tempfile::tempdir().unwrap();
+        let app_path = make_current_appimage(apps_dir.path());
+        let downloads = tempfile::tempdir().unwrap();
+        let archive = make_appimage_fixture(downloads.path());
+
         install(&archive, &app_path).unwrap();
 
-        let content = fs::read(&app_path).unwrap();
-        assert!(
-            !contains_subslice(&content, b"old-appimage-content"),
-            "old AppImage content must be gone"
-        );
-        assert!(
-            contains_subslice(&content, b"#!/bin/sh"),
-            "new AppImage should be the fake one we built"
-        );
+        assert_swapped(&app_path, b"#!/bin/sh\necho fake-appimage\n");
+    }
+
+    #[test]
+    fn install_rejects_an_artifact_that_is_not_an_appimage_and_keeps_the_current_one() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _appimage = AppImageEnvGuard::set("/nonexistent-appimage-marker");
+
+        let apps_dir = tempfile::tempdir().unwrap();
+        let app_path = make_current_appimage(apps_dir.path());
+        let downloads = tempfile::tempdir().unwrap();
+        let bogus = downloads.path().join("TestApp.AppImage");
+        fs::write(&bogus, b"<html>404</html>").unwrap();
+
+        let err = install(&bogus, &app_path).unwrap_err();
+        assert!(matches!(err, OtaError::BadFullArtifact(_)), "got {err:?}");
+        assert_swapped(&app_path, b"old-appimage-content");
     }
 
     #[test]
     fn relaunch_invokes_execve_without_erroring_synchronously() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _appimage = AppImageEnvGuard::set("/nonexistent-appimage-marker");
         let apps_dir = tempfile::tempdir().unwrap();
-        let app_path = apps_dir.path().join("TestApp.AppImage");
+        let app_path = make_current_appimage(apps_dir.path());
         fs::write(&app_path, b"#!/bin/sh\necho ok\n").unwrap();
 
         // `spawn()` only fails synchronously if the path is nonexistent or
         // not executable; the execve itself is observed by a separate
         // process — we just assert spawn itself doesn't error.
         relaunch(&app_path).unwrap();
-    }
-
-    #[test]
-    fn a_failed_swap_restores_the_previous_bundle() {
-        let apps_dir = tempfile::tempdir().unwrap();
-        let app_path = apps_dir.path().join("TestApp.AppImage");
-        fs::write(&app_path, b"still the old one").unwrap();
-
-        let backup_dir = tempfile::tempdir().unwrap();
-        // A `new_app` source that does not exist forces the second rename
-        // to fail deterministically.
-        let missing_new_app = backup_dir.path().join("this-does-not-exist");
-
-        let err =
-            swap_app_dirs(&app_path, &missing_new_app, &backup_dir.path().join("backup")).unwrap_err();
-        assert!(matches!(err, OtaError::Io(_)), "got {err:?}");
-
-        let content = fs::read(&app_path).unwrap();
-        assert_eq!(content, b"still the old one", "the original bundle must be restored");
-    }
-
-    #[test]
-    fn pick_tmp_dir_lands_on_the_same_device_as_the_destination() {
-        let dest = tempfile::tempdir().unwrap();
-        let picked = pick_tmp_dir(dest.path()).unwrap();
-        assert_eq!(
-            fs::metadata(dest.path()).unwrap().dev(),
-            fs::metadata(picked.path()).unwrap().dev()
-        );
     }
 
     #[test]

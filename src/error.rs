@@ -25,6 +25,9 @@ pub enum OtaError {
     #[error("partial artifact archive is invalid: {0}")]
     BadArchive(String),
 
+    #[error("full artifact is invalid: {0}")]
+    BadFullArtifact(String),
+
     #[error("nothing is staged to activate")]
     NothingStaged,
 
