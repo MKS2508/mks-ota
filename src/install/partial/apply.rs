@@ -108,6 +108,9 @@ pub fn stage(
     native_version: &str,
 ) -> Result<String, OtaError> {
     latest.accepts_native(native_version)?;
+    if slots::load_state(app_data_dir).reverted_version.as_deref() == Some(latest.version.as_str()) {
+        return Err(OtaError::PreviouslyReverted(latest.version.clone()));
+    }
 
     let actual_sha = sha256_of_file(zip_path)?;
     if let Some(expected) = latest.sha256_hex() {
@@ -181,6 +184,7 @@ pub fn activate_staged(app_data_dir: &Path, native_version: &str) -> Result<Stri
     }
 
     state.previous = state.active.take();
+    state.previous_version = state.active_version.take();
     state.active_version = state.staged_version.take();
     state.native_version_at_stage = None;
     state.active = Some(staged.clone());
@@ -197,7 +201,10 @@ pub fn activate_staged(app_data_dir: &Path, native_version: &str) -> Result<Stri
 pub fn rollback(app_data_dir: &Path) -> Result<Option<String>, OtaError> {
     let mut state = slots::load_state(app_data_dir);
     let failed = state.active.take();
-    state.active_version = None;
+    if failed.is_some() {
+        state.reverted_version = state.active_version.take();
+    }
+    state.active_version = state.previous_version.take();
     state.active = state.previous.take();
     state.verified = state.active.is_some();
     state.boot_attempts = 0;
@@ -479,6 +486,65 @@ fn an_artifact_outside_its_native_window_is_rejected_before_touching_disk() {
         assert_eq!(s.active.as_deref(), Some("old"));
         assert!(s.verified, "the slot we fell back to had already worked");
         assert!(s.active_version.is_none());
+    }
+
+    #[test]
+    fn rollback_restores_the_previous_version_and_remembers_the_failed_one() {
+        let dir = tmpdir("rollback-versions");
+        slots::save_state(&dir, &SlotState {
+            active: Some("new".into()),
+            active_version: Some("2026.11.1-2".into()),
+            previous: Some("old".into()),
+            previous_version: Some("2026.11.1-1".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        rollback(&dir).unwrap();
+        let s = slots::load_state(&dir);
+        assert_eq!(s.active.as_deref(), Some("old"));
+        assert_eq!(s.active_version.as_deref(), Some("2026.11.1-1"));
+        assert_eq!(s.reverted_version.as_deref(), Some("2026.11.1-2"));
+        assert!(s.previous_version.is_none());
+    }
+
+    #[test]
+    fn a_version_rolled_back_here_is_not_staged_again_but_its_fix_is() {
+        let dir = tmpdir("reverted-gate");
+        slots::save_state(&dir, &SlotState {
+            reverted_version: Some("2026.11.1-2".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let bytes = zip_with(&[("index.html", b"<html>")]);
+        let key = TestKey::generate();
+        let zip_path = write_file(&dir, "frontend.zip", &bytes);
+
+        let same = signed_latest(&bytes, &key, "2026.11.1-2");
+        let err = stage(&dir, &same, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap_err();
+        assert!(matches!(err, OtaError::PreviouslyReverted(ref v) if v == "2026.11.1-2"), "got {err:?}");
+
+        let fix = signed_latest(&bytes, &key, "2026.11.1-3");
+        assert!(stage(&dir, &fix, &zip_path, &key.pubkey_payload(), "0.2.12").is_ok());
+    }
+
+    #[test]
+    fn activating_keeps_the_outgoing_version_for_a_later_rollback() {
+        let dir = tmpdir("activate-previous-version");
+        slots::save_state(&dir, &SlotState {
+            active: Some("old".into()),
+            active_version: Some("2026.11.1-1".into()),
+            staged: Some("new".into()),
+            staged_version: Some("2026.11.1-2".into()),
+            native_version_at_stage: Some("0.2.12".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        activate_staged(&dir, "0.2.12").unwrap();
+        let s = slots::load_state(&dir);
+        assert_eq!(s.previous_version.as_deref(), Some("2026.11.1-1"));
+        assert_eq!(s.active_version.as_deref(), Some("2026.11.1-2"));
     }
 
     #[test]

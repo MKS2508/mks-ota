@@ -119,6 +119,11 @@ pub fn arm_hot_apply<R: tauri::Runtime>(app: tauri::AppHandle<R>, slot_id: Strin
             Ok(_) => {
                 use tauri::Emitter as _;
                 let _ = app.emit(BUNDLE_REVERTED_EVENT, slot_id);
+                // The frontend that failed to confirm is the one on screen, and a
+                // broken one cannot act on the event: the backend reloads it.
+                for webview in app.webview_windows().values() {
+                    let _ = webview.eval("window.location.reload()");
+                }
             }
             Err(err) => eprintln!("[ota] could not revert: {err}"),
         }

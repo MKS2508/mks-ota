@@ -38,6 +38,13 @@ pub struct SlotState {
     pub staged_version: Option<String>,
     /// Semver of the active artifact.
     pub active_version: Option<String>,
+    /// Semver of the previous artifact, so a rollback restores it with its
+    /// version instead of leaving the active slot unnamed.
+    pub previous_version: Option<String>,
+    /// Last version rolled back for failing to confirm. Never staged again:
+    /// the hub keeps serving it as latest until a fix is published, and
+    /// re-applying it would repeat the failure on every poll.
+    pub reverted_version: Option<String>,
     /// `false` until the active slot has confirmed `app-ready`.
     pub verified: bool,
     /// Boots consumed by the active slot without confirming.
@@ -124,7 +131,7 @@ pub fn invalidate_if_native_changed(app_data_dir: &Path, native_version: &str) -
             state.native_version_at_swap
         );
         state.previous = state.active.take();
-        state.active_version = None;
+        state.previous_version = state.active_version.take();
         state.verified = false;
         state.boot_attempts = 0;
         state.native_version_at_swap = None;

@@ -28,6 +28,9 @@ pub enum OtaError {
     #[error("nothing is staged to activate")]
     NothingStaged,
 
+    #[error("{0} was rolled back on this device after failing to confirm; not staging it again")]
+    PreviouslyReverted(String),
+
     #[error(
         "staged artifact {staged_version} was downloaded for native {staged_for}, but this binary is {native}; not activating it"
     )]
