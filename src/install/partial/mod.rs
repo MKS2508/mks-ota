@@ -113,6 +113,9 @@ pub(crate) mod testkit {
             sha256: format!("sha256:{}", hex_of(bytes)),
             signature: key.sign(bytes),
             pub_date: "2026-08-29T00:00:00Z".into(),
+            ordering: None,
+            published_at: None,
+            newer_than_current: None,
         }
     }
 
