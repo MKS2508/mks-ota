@@ -82,6 +82,17 @@ pub struct HubLatest {
     pub native_min: Option<String>,
     #[serde(default)]
     pub native_max: Option<String>,
+    /// `"semver"` or `"published"`. Absent on hubs that predate the field,
+    /// which reads as semver.
+    #[serde(default)]
+    pub ordering: Option<String>,
+    /// Alias of `pub_date` the hub emits next to `ordering`.
+    #[serde(default)]
+    pub published_at: Option<String>,
+    /// Hub's verdict for `?current=<version>`; `None` when `current` was not
+    /// sent or the hub does not know that version.
+    #[serde(default)]
+    pub newer_than_current: Option<bool>,
     /// Raw urgency as the hub sent it (`"normal"` | `"urgent"`). Kept as a
     /// string so a level added by a newer hub cannot fail deserialization;
     /// read it through [`HubLatest::urgency`]. Absent on older hubs.
@@ -124,6 +135,17 @@ impl HubLatest {
         let remote = semver::Version::parse(&self.version)?;
         let current = semver::Version::parse(current)?;
         Ok(remote > current)
+    }
+
+    /// Update decision honouring the hub's ordering policy. With
+    /// `ordering == "published"` the hub decides (`newer_than_current`) and
+    /// anything but `Some(true)` is "do not offer": never by semver, never by
+    /// hash. Without `ordering` this is [`HubLatest::is_newer_than`].
+    pub fn is_update_over(&self, current: &str) -> Result<bool, OtaError> {
+        if self.ordering.as_deref() == Some("published") {
+            return Ok(self.newer_than_current == Some(true));
+        }
+        self.is_newer_than(current)
     }
 }
 
@@ -210,6 +232,9 @@ mod tests {
             pub_date: "2026-08-28T00:00:00Z".into(),
             native_min: None,
             native_max: None,
+            ordering: None,
+            published_at: None,
+            newer_than_current: None,
             urgency: None,
         }
     }
@@ -290,6 +315,60 @@ mod tests {
     fn malformed_version_is_a_typed_error_not_a_panic() {
         let bad = HubLatest { version: "not-a-version".into(), ..sample("sha256:unknown") };
         assert!(bad.is_newer_than("0.1.1").is_err());
+    }
+
+    // ── Ordering policy declared by the hub ──────────────────────────────
+
+    fn published(version: &str, newer: Option<bool>) -> HubLatest {
+        HubLatest {
+            version: version.into(),
+            ordering: Some("published".into()),
+            newer_than_current: newer,
+            ..sample("sha256:unknown")
+        }
+    }
+
+    #[test]
+    fn published_ordering_obeys_the_hub_when_newer() {
+        // semver says 0.4.6-nightly.4737fef9 < ...f0758e60, the hub says newer.
+        let m = published("0.4.6-nightly.4737fef9", Some(true));
+        assert!(!m.is_newer_than("0.4.6-nightly.f0758e60").unwrap());
+        assert!(m.is_update_over("0.4.6-nightly.f0758e60").unwrap());
+    }
+
+    #[test]
+    fn published_ordering_obeys_the_hub_when_not_newer() {
+        // semver says newer, the hub says no: no offer.
+        let m = published("0.4.6-nightly.f0758e60", Some(false));
+        assert!(m.is_newer_than("0.4.6-nightly.4737fef9").unwrap());
+        assert!(!m.is_update_over("0.4.6-nightly.4737fef9").unwrap());
+    }
+
+    #[test]
+    fn published_ordering_without_verdict_never_offers() {
+        let m = published("9.9.9", None);
+        assert!(!m.is_update_over("0.0.0").unwrap());
+    }
+
+    #[test]
+    fn no_ordering_keeps_the_semver_decision() {
+        let m = HubLatest { version: "0.2.0".into(), ..sample("sha256:unknown") };
+        assert!(m.is_update_over("0.1.1").unwrap());
+        assert!(!m.is_update_over("0.2.0").unwrap());
+        let sv = HubLatest { ordering: Some("semver".into()), newer_than_current: Some(true), ..m };
+        assert!(!sv.is_update_over("0.3.0").unwrap(), "semver ignores the hub verdict");
+    }
+
+    #[test]
+    fn deserializes_the_ordering_fields_and_old_shape() {
+        let new = r#"{"component":"c","version":"1.0.0","url":"u","sha256":"x","signature":"s",
+            "pubDate":"2026-11-02T00:00:00Z","publishedAt":"2026-11-02T00:00:00Z",
+            "ordering":"published","newerThanCurrent":true}"#;
+        let m: HubLatest = serde_json::from_str(new).unwrap();
+        assert_eq!(m.ordering.as_deref(), Some("published"));
+        assert_eq!(m.newer_than_current, Some(true));
+        let null: HubLatest = serde_json::from_str(&new.replace("true}", "null}")).unwrap();
+        assert_eq!(null.newer_than_current, None);
     }
 
     // ── Partial-artifact component URL (L3) ──────────────────────────────
