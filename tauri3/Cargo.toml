@@ -1,0 +1,16 @@
+[package]
+name = "mks-ota-tauri3"
+version = "0.6.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "mks-ota for Tauri 3: the same crate, with the Tauri-bound modules (protocol, watchdog::arm_hot_apply) compiled against Tauri 3."
+repository = "https://github.com/MKS2508/mks-ota"
+
+# Own workspace and own lockfile, on purpose: `tauri` declares
+# `links = "Tauri"`, so tauri 2 and tauri 3 cannot share one dependency
+# graph — not even as two optional deps of the same package. Keeping this
+# package out of the root graph is what lets both exist in one repo.
+[workspace]
+
+[dependencies]
+mks-ota = { path = "..", version = "0.6.0", default-features = false }
