@@ -67,6 +67,11 @@ pub fn extract_app_bundle(archive: &Path, into: &Path) -> Result<(), OtaError> {
 /// running bundle was a deb (no `$APPIMAGE`), this resolves `downloaded` to
 /// an installable `.deb` and runs `pkexec dpkg -i` on it — the new binary
 /// takes effect on the next launch.
+///
+/// Keeps nothing of the old AppImage. A caller that wants a way back calls
+/// [`super::trial::begin`] first (and [`super::trial::abort`] if this
+/// fails), then [`relaunch`]: the order is the caller's, the signature of
+/// this function does not change.
 pub fn install(downloaded: &Path, app_path: &Path) -> Result<(), OtaError> {
     // deb path: no APPIMAGE means this was installed via dpkg.
     if std::env::var_os("APPIMAGE").is_none() {

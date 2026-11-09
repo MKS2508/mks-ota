@@ -62,6 +62,9 @@ pub enum OtaError {
     #[error("could not locate the .app bundle from the running executable path")]
     AppBundleNotFound,
 
+    #[error("cannot revert the full update: {0}")]
+    NothingToRevert(&'static str),
+
     #[error("install failed and restoring the previous version also failed: {0}")]
     RollbackFailed(String),
 

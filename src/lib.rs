@@ -8,9 +8,11 @@
 //! ```text
 //! manifest              -> deserializes GET /api/components/{c}/latest (our shape, not Tauri's)
 //! verify                -> minisign-verify: content + trusted-comment signature, streaming
-//! download              -> stream to a temp file, sha256 while streaming, Range/resume
+//! download              -> stream to a temp file, sha256 while streaming, Range/resume,
+//!                          rate limit + pause (download_controlled)
 //! install::full::macos  -> extract + swap the .app, relaunch
 //! install::full::linux  -> AppImage (raw or .tar.gz, atomic file swap) + deb (pkexec dpkg)
+//! install::full::trial  -> previous AppImage kept aside + trial/boots/unacked files, revert
 //! install::partial      -> A/B slots in appDataDir: two gates, stage/activate, rollback (F2)
 //! protocol  [tauri]     -> custom URI scheme: active slot with embedded fallback (F2)
 //! watchdog              -> boot counter + hot-apply grace, auto-rollback (F2)
