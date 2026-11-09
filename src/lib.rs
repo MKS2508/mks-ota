@@ -16,6 +16,8 @@
 //! install::partial      -> A/B slots in appDataDir: two gates, stage/activate, rollback (F2)
 //! push                  -> optional SSE subscription to the hub's /api/events: a hint to
 //!                          query /latest now, never an update (reconnect, backoff, cancel)
+//! policy                -> decide(urgency, kind): ask or apply-when-idle; IdleHook (app-defined,
+//!                          NeverIdle by default) and when_idle(hook, every, apply)
 //! protocol  [tauri]     -> custom URI scheme: active slot with embedded fallback (F2)
 //! watchdog              -> boot counter + hot-apply grace, auto-rollback (F2)
 //! ```
@@ -27,6 +29,7 @@ pub mod download;
 pub mod error;
 pub mod install;
 pub mod manifest;
+pub mod policy;
 #[cfg(feature = "tauri")]
 pub mod protocol;
 pub mod push;
