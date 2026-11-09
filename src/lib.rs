@@ -14,6 +14,8 @@
 //! install::full::linux  -> AppImage (raw or .tar.gz, atomic file swap) + deb (pkexec dpkg)
 //! install::full::trial  -> previous AppImage kept aside + trial/boots/unacked files, revert
 //! install::partial      -> A/B slots in appDataDir: two gates, stage/activate, rollback (F2)
+//! push                  -> optional SSE subscription to the hub's /api/events: a hint to
+//!                          query /latest now, never an update (reconnect, backoff, cancel)
 //! protocol  [tauri]     -> custom URI scheme: active slot with embedded fallback (F2)
 //! watchdog              -> boot counter + hot-apply grace, auto-rollback (F2)
 //! ```
@@ -27,6 +29,7 @@ pub mod install;
 pub mod manifest;
 #[cfg(feature = "tauri")]
 pub mod protocol;
+pub mod push;
 pub mod verify;
 pub mod watchdog;
 
