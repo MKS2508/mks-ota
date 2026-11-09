@@ -24,6 +24,12 @@
 //!
 //! The `tauri` feature (off by default) gates everything that needs a Tauri
 //! runtime handle; the rest of the crate is plain Rust + reqwest.
+//!
+//! Two packages build this same source: `mks-ota` binds `tauri` to Tauri 2,
+//! `mks-ota-tauri3` (in `tauri3/`) binds it to Tauri 3 and also turns on the
+//! `tauri-v3` marker. Code that must differ between majors uses
+//! `#[cfg(feature = "tauri-v3")]`; everything else is shared as is. They
+//! cannot be combined: both majors declare `links = "Tauri"`.
 
 pub mod download;
 pub mod error;
@@ -37,4 +43,21 @@ pub mod verify;
 pub mod watchdog;
 
 pub use error::OtaError;
+
+#[cfg(all(test, feature = "tauri"))]
+mod tauri_major {
+    /// Each package compiles against the Tauri major it promises. Catches a
+    /// manifest edit that points one package at the other's major, which
+    /// would otherwise build green (the shared code compiles on both).
+    #[test]
+    fn the_package_links_the_tauri_major_it_promises() {
+        let expected = if cfg!(feature = "tauri-v3") { "3." } else { "2." };
+        assert!(
+            tauri::VERSION.starts_with(expected),
+            "{} is built against tauri {}, expected {expected}x",
+            env!("CARGO_PKG_NAME"),
+            tauri::VERSION
+        );
+    }
+}
 pub use manifest::{HubLatest, Urgency};

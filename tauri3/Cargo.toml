@@ -48,7 +48,11 @@ path = "../tests/push_sse.rs"
 [features]
 default = []
 # Same name as in mks-ota, bound to tauri 3 here.
-tauri = ["dep:tauri", "dep:tokio"]
+tauri = ["dep:tauri", "dep:tokio", "tauri-v3"]
+# Marker for the shared source: `#[cfg(feature = "tauri-v3")]` is how code
+# that differs between Tauri majors picks its side. Implied by `tauri`;
+# not meant to be enabled on its own.
+tauri-v3 = []
 
 # Keep in sync with the root Cargo.toml: only `tauri` differs.
 [dependencies]

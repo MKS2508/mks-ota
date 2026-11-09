@@ -12,6 +12,11 @@ default = []
 # handler and the hot-apply watchdog timer.
 tauri = ["dep:tauri", "dep:tokio"]
 
+# `tauri-v3` only exists in tauri3/Cargo.toml (the Tauri 3 build of this
+# same source); declared here so the shared `cfg`s don't warn in this build.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("tauri-v3"))'] }
+
 [dependencies]
 minisign-verify = "0.2.5"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
