@@ -20,11 +20,19 @@ full design and F2/F3 scope.
 ## Modules
 
 ```
-manifest              deserializes the hub's own `GET /api/components/{c}/latest` JSON
+manifest              deserializes the hub's own `GET /api/components/{c}/latest` JSON (+ urgency)
 verify                minisign-verify: content signature + trusted-comment global signature
-download              stream to a temp file, sha256 while streaming, Range/resume
+download              stream to a temp file, sha256 while streaming, Range/resume,
+                      rate limit + pause (download_controlled)
 install::full::macos  extract + swap the .app in place, relaunch
+install::full::linux  AppImage (atomic swap) + deb (pkexec dpkg)
+install::full::trial  previous AppImage kept aside, boot counting, revert (Linux)
+install::partial      A/B slots in appDataDir: stage/activate, rollback
+push                  optional SSE subscription to the hub's /api/events — a hint to
+                      query /latest now, never an update; reconnects with backoff + jitter
 ```
+
+See `CHANGELOG.md` for what each version added.
 
 ## Adding as a dependency
 
