@@ -48,6 +48,9 @@ pub enum OtaError {
     #[error("signature does not verify")]
     InvalidSignature,
 
+    #[error("download paused by the caller; the partial file is kept for a Range resume")]
+    Paused,
+
     #[error("expected sha256 {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
 
