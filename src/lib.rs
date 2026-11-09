@@ -29,4 +29,4 @@ pub mod verify;
 pub mod watchdog;
 
 pub use error::OtaError;
-pub use manifest::HubLatest;
+pub use manifest::{HubLatest, Urgency};

@@ -144,6 +144,7 @@ pub(crate) mod testkit {
             pub_date: "2026-08-29T00:00:00Z".into(),
             native_min: None,
             native_max: None,
+            urgency: None,
         }
     }
 

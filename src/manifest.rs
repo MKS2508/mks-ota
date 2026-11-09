@@ -2,9 +2,61 @@
 //! `RemoteRelease`. ADR-0045 D8-B: the hub stays agnostic of artifacts, the
 //! client owns the shape.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::OtaError;
+
+/// How insistently a published version should reach the device. Travels in
+/// `/latest` (the source of truth) and is repeated in push events.
+///
+/// Deliberately tolerant: anything the client does not know — absent, `null`,
+/// a level added by a newer hub, even a non-string — deserializes as
+/// [`Urgency::Normal`]. A future value must never make a manifest or a
+/// persisted `state.json` unreadable (`load_state` would read a corrupt file
+/// as "no slot" and drop the active bundle). Serializes as `"normal"` |
+/// `"urgent"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", from = "UrgencyWire")]
+pub enum Urgency {
+    #[default]
+    Normal,
+    Urgent,
+}
+
+/// Whatever the wire carries; folded into [`Urgency`] by `From`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UrgencyWire {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl From<UrgencyWire> for Urgency {
+    fn from(wire: UrgencyWire) -> Self {
+        match wire {
+            UrgencyWire::Text(raw) => Urgency::parse(Some(&raw)),
+            UrgencyWire::Other(_) => Urgency::Normal,
+        }
+    }
+}
+
+impl Urgency {
+    /// Interprets the raw wire value. `None` and unknown values ⇒ `Normal`.
+    pub fn parse(raw: Option<&str>) -> Urgency {
+        match raw.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("urgent") => Urgency::Urgent,
+            _ => Urgency::Normal,
+        }
+    }
+
+    /// Wire form: `"normal"` | `"urgent"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Urgency::Urgent => "urgent",
+            Urgency::Normal => "normal",
+        }
+    }
+}
 
 /// `GET /api/components/{component}/latest?target=<t>&arch=<a>` response.
 #[derive(Debug, Clone, Deserialize)]
@@ -30,9 +82,19 @@ pub struct HubLatest {
     pub native_min: Option<String>,
     #[serde(default)]
     pub native_max: Option<String>,
+    /// Raw urgency as the hub sent it (`"normal"` | `"urgent"`). Kept as a
+    /// string so a level added by a newer hub cannot fail deserialization;
+    /// read it through [`HubLatest::urgency`]. Absent on older hubs.
+    #[serde(default)]
+    pub urgency: Option<String>,
 }
 
 impl HubLatest {
+    /// The published urgency, `Normal` when absent, `null` or unknown.
+    pub fn urgency(&self) -> Urgency {
+        Urgency::parse(self.urgency.as_deref())
+    }
+
     /// Whether this artifact may land on native binary `native`, per the
     /// window in the manifest. The client applies it itself instead of
     /// trusting the hub to have filtered.
@@ -148,7 +210,33 @@ mod tests {
             pub_date: "2026-08-28T00:00:00Z".into(),
             native_min: None,
             native_max: None,
+            urgency: None,
         }
+    }
+
+    // ── Urgency (TR-30) ──────────────────────────────────────────────────
+
+    #[test]
+    fn urgency_is_read_from_the_manifest_with_normal_as_the_fallback() {
+        let base = r#""component":"haido-frontend","version":"2026.11.9-1","url":"u","sha256":"sha256:unknown","signature":"s","pubDate":"2026-11-09T00:00:00Z""#;
+        let parse = |extra: &str| -> HubLatest { serde_json::from_str(&format!("{{{base}{extra}}}")).unwrap() };
+
+        assert_eq!(parse("").urgency(), Urgency::Normal, "absent (old hub)");
+        assert_eq!(parse(r#","urgency":null"#).urgency(), Urgency::Normal, "null");
+        assert_eq!(parse(r#","urgency":"normal""#).urgency(), Urgency::Normal);
+        assert_eq!(parse(r#","urgency":"urgent""#).urgency(), Urgency::Urgent);
+        assert_eq!(parse(r#","urgency":"critical""#).urgency(), Urgency::Normal, "a future level never breaks the client");
+    }
+
+    #[test]
+    fn urgency_deserializes_unknown_values_without_error() {
+        let u: Urgency = serde_json::from_str(r#""critical""#).expect("unknown level must not fail");
+        assert_eq!(u, Urgency::Normal);
+        assert_eq!(serde_json::from_str::<Urgency>("7").unwrap(), Urgency::Normal, "not even a string");
+        assert_eq!(serde_json::from_str::<Urgency>(r#""urgent""#).unwrap(), Urgency::Urgent);
+        assert_eq!(serde_json::to_string(&Urgency::Urgent).unwrap(), r#""urgent""#);
+        assert_eq!(serde_json::to_string(&Urgency::Normal).unwrap(), r#""normal""#);
+        assert_eq!(Urgency::Urgent.as_str(), "urgent");
     }
 
     #[test]

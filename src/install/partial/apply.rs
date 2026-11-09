@@ -152,6 +152,7 @@ pub fn stage(
     let mut state = slots::load_state(app_data_dir);
     state.staged = Some(id.clone());
     state.staged_version = Some(latest.version.clone());
+    state.staged_urgency = Some(latest.urgency());
     state.native_version_at_stage = Some(native_version.to_string());
     slots::save_state(app_data_dir, &state).map_err(OtaError::StateIo)?;
     Ok(id)
@@ -186,6 +187,7 @@ pub fn activate_staged(app_data_dir: &Path, native_version: &str) -> Result<Stri
     state.previous = state.active.take();
     state.previous_version = state.active_version.take();
     state.active_version = state.staged_version.take();
+    state.staged_urgency = None;
     state.native_version_at_stage = None;
     state.active = Some(staged.clone());
     state.verified = false;
@@ -248,6 +250,7 @@ pub fn prune(app_data_dir: &Path) -> Result<usize, OtaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::Urgency;
     use crate::install::partial::testkit::{
         hex_of, signed_latest, tmpdir, write_file, write_specimen_state, zip_with, TestKey,
         SPECIMEN_NATIVE,
@@ -276,6 +279,24 @@ mod tests {
         assert!(state.active.is_none(), "stage must not activate anything");
         assert_eq!(state.native_version_at_stage.as_deref(), Some("0.2.12"));
         assert!(slots::bundles_root(&dir).join(&id).join("index.html").is_file());
+        assert_eq!(state.staged_urgency, Some(Urgency::Normal), "no urgency in /latest reads as normal");
+    }
+
+    #[test]
+    fn stage_records_the_urgency_of_latest_and_activation_clears_it() {
+        let dir = tmpdir("stage-urgency");
+        let zip = zip_with(&[("index.html", b"<html>urgent</html>")]);
+        let key = TestKey::generate();
+        let latest = HubLatest { urgency: Some("urgent".into()), ..signed_latest(&zip, &key, "0.3.0") };
+        let zip_path = write_file(&dir, "frontend.zip", &zip);
+
+        stage(&dir, &latest, &zip_path, &key.pubkey_payload(), "0.2.12").unwrap();
+        assert_eq!(slots::load_state(&dir).staged_urgency, Some(Urgency::Urgent));
+
+        activate_staged(&dir, "0.2.12").unwrap();
+        let state = slots::load_state(&dir);
+        assert!(state.staged_version.is_none());
+        assert!(state.staged_urgency.is_none(), "cleared together with staged_version");
     }
 
     #[test]

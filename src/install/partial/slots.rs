@@ -19,6 +19,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::Urgency;
+
 /// Name of the state file inside `bundles/`.
 const STATE_FILE: &str = "state.json";
 
@@ -36,6 +38,10 @@ pub struct SlotState {
     pub staged: Option<String>,
     /// Semver of the staged artifact — feeds the no-downgrade gate.
     pub staged_version: Option<String>,
+    /// Urgency the hub's `/latest` published for the staged artifact (never
+    /// taken from a push event). Written by `stage()`, cleared together with
+    /// `staged_version`. `None` on states written before the field existed.
+    pub staged_urgency: Option<Urgency>,
     /// Semver of the active artifact.
     pub active_version: Option<String>,
     /// Semver of the previous artifact, so a rollback restores it with its
@@ -145,6 +151,7 @@ pub fn invalidate_if_native_changed(app_data_dir: &Path, native_version: &str) -
         );
         state.staged = None;
         state.staged_version = None;
+        state.staged_urgency = None;
         state.native_version_at_stage = None;
         dropped = true;
     }
@@ -293,6 +300,7 @@ mod tests {
         let state = load_state(&dir);
         assert!(state.staged.is_none(), "an orphan staged slot is dropped even with no active one");
         assert!(state.staged_version.is_none());
+        assert!(state.staged_urgency.is_none());
 
         // Idempotent once both slots are gone — the honest version of the
         // claim the old assertion was making.
@@ -347,5 +355,34 @@ mod tests {
         assert!(resolve_within(&root, "../secret.db").is_none());
         assert!(resolve_within(&root, "/assets/../../secret.db").is_none());
         assert!(resolve_within(&root, "/does-not-exist.js").is_none());
+    }
+
+    #[test]
+    fn a_state_without_staged_urgency_or_with_an_unknown_one_still_loads() {
+        // A state.json written by mks-ota <= 0.3 has no `staged_urgency`; a
+        // future hub level ("critical") must not turn the file "corrupt",
+        // because load_state reads corrupt as "no slot" and drops the
+        // active bundle.
+        let dir = tmpdir("urgency-compat");
+        let root = bundles_root(&dir);
+        fs::create_dir_all(&root).unwrap();
+
+        fs::write(root.join(STATE_FILE), r#"{"active":"a","active_version":"1.0.0","verified":true}"#).unwrap();
+        let old = load_state(&dir);
+        assert_eq!(old.active.as_deref(), Some("a"));
+        assert!(old.staged_urgency.is_none());
+
+        fs::write(
+            root.join(STATE_FILE),
+            r#"{"active":"a","staged":"b","staged_version":"1.1.0","staged_urgency":"critical"}"#,
+        )
+        .unwrap();
+        let future = load_state(&dir);
+        assert_eq!(future.active.as_deref(), Some("a"), "the active slot survives an unknown level");
+        assert_eq!(future.staged_urgency, Some(Urgency::Normal));
+
+        save_state(&dir, &SlotState { staged_urgency: Some(Urgency::Urgent), ..future }).unwrap();
+        let raw = fs::read_to_string(root.join(STATE_FILE)).unwrap();
+        assert!(raw.contains(r#""staged_urgency": "urgent""#), "persisted as the wire string: {raw}");
     }
 }
