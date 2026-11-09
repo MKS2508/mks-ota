@@ -102,6 +102,10 @@ impl PushConfig {
 pub struct Published {
     pub component: String,
     pub version: String,
+    /// Artifact kind as the hub labels it (`"binary"` today; `"nix"` and
+    /// others later). `None` when an older hub omits it. Informational, like
+    /// the rest of the event: never used to pick what to install.
+    pub kind: Option<String>,
     pub urgency: Urgency,
 }
 
@@ -278,6 +282,8 @@ struct PublishedWire {
     component: String,
     version: String,
     #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
     urgency: Urgency,
 }
 
@@ -295,6 +301,7 @@ fn published_from(event: &SseEvent) -> Option<Published> {
     Some(Published {
         component: wire.component,
         version: wire.version,
+        kind: wire.kind.filter(|k| !k.trim().is_empty()),
         urgency: wire.urgency,
     })
 }
@@ -528,8 +535,46 @@ mod tests {
             Some(Published {
                 component: "haido-frontend-staging".into(),
                 version: "2026.11.9-1".into(),
+                kind: None,
                 urgency: Urgency::Urgent
             })
+        );
+    }
+
+    #[test]
+    fn kind_is_read_when_present_and_optional_for_older_hubs() {
+        let ev = |data: &str| SseEvent {
+            event: EVENT_COMPONENT_PUBLISHED.into(),
+            data: data.into(),
+            id: None,
+        };
+        let with = published_from(&ev(
+            r#"{"component":"c","version":"1.0.0","kind":"binary","urgency":"forced"}"#,
+        ))
+        .unwrap();
+        assert_eq!(with.kind.as_deref(), Some("binary"));
+        assert_eq!(with.urgency, Urgency::Forced);
+        let older = published_from(&ev(r#"{"component":"c","version":"1.0.0"}"#))
+            .expect("a hub without kind still parses");
+        assert_eq!(older.kind, None);
+        assert_eq!(
+            published_from(&ev(r#"{"component":"c","version":"1","kind":null}"#))
+                .unwrap()
+                .kind,
+            None
+        );
+        assert_eq!(
+            published_from(&ev(r#"{"component":"c","version":"1","kind":""}"#))
+                .unwrap()
+                .kind,
+            None
+        );
+        let future =
+            published_from(&ev(r#"{"component":"c","version":"1","kind":"nix"}"#)).unwrap();
+        assert_eq!(
+            future.kind.as_deref(),
+            Some("nix"),
+            "an unknown kind is carried, not rejected"
         );
     }
 

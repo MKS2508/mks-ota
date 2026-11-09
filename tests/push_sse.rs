@@ -76,7 +76,7 @@ fn send(stream: &mut TcpStream, text: &str) {
 
 fn published(component: &str, version: &str, urgency: &str, id: u32) -> String {
     format!(
-        "event: component-published\nid: {id}\ndata: {{\"component\":\"{component}\",\"version\":\"{version}\",\"target\":\"any\",\"arch\":\"any\",\"urgency\":\"{urgency}\",\"pubDate\":\"2026-11-09T10:00:00.000Z\"}}\n\n"
+        "event: component-published\nid: {id}\ndata: {{\"component\":\"{component}\",\"version\":\"{version}\",\"target\":\"any\",\"arch\":\"any\",\"kind\":\"binary\",\"urgency\":\"{urgency}\",\"pubDate\":\"2026-11-09T10:00:00.000Z\"}}\n\n"
     )
 }
 
@@ -140,6 +140,7 @@ fn a_published_event_arrives_with_its_urgency() {
         PushSignal::Published(Published {
             component: "haido-frontend-staging".into(),
             version: "2026.11.9-1".into(),
+            kind: Some("binary".into()),
             urgency: Urgency::Urgent,
         })
     );
@@ -260,6 +261,7 @@ fn malformed_events_are_skipped_and_the_stream_goes_on() {
         PushSignal::Published(Published {
             component: "c".into(),
             version: "2.0.0".into(),
+            kind: Some("binary".into()),
             urgency: Urgency::Normal
         })
     );
