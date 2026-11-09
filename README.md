@@ -28,6 +28,9 @@ install::full::macos  extract + swap the .app in place, relaunch
 install::full::linux  AppImage (atomic swap) + deb (pkexec dpkg)
 install::full::trial  previous AppImage kept aside, boot counting, revert (Linux)
 install::partial      A/B slots in appDataDir: stage/activate, rollback
+policy                decide(urgency, kind): ask / apply-when-idle — normal asks; urgent
+                      auto-applies partials, asks for fulls; forced auto-applies both.
+                      Only through an app IdleHook (NeverIdle by default); when_idle
 push                  optional SSE subscription to the hub's /api/events — a hint to
                       query /latest now, never an update; reconnects with backoff + jitter
 ```
