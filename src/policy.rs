@@ -1,12 +1,15 @@
 //! When to apply an update — decided on the client, never by the hub.
 //!
 //! The hub only publishes an [`Urgency`] with each version. What that means
-//! for a given artifact is [`decide`]:
+//! for an artifact depends on **how it applies** ([`ApplyKind`]), not on its
+//! format — a frontend bundle is `Hot`, an AppImage is `Restart`, and a
+//! future Nix generation (TR-33 of `tpv-el-haido2`) will be `Restart` too,
+//! so this table does not change when a new format arrives. [`decide`]:
 //!
 //! | | `normal` | `urgent` | `forced` |
 //! |---|---|---|---|
-//! | partial (bundle) | ask | apply when idle | apply when idle |
-//! | full (binary) | ask | ask (insistently) | apply when idle |
+//! | `Hot` (e.g. frontend bundle) | ask | apply when idle | apply when idle |
+//! | `Restart` (e.g. AppImage) | ask | ask (insistently) | apply when idle |
 //!
 //! "Insistently" is UI the app builds from the urgency itself (no
 //! indefinite "later"); the crate only distinguishes asking from applying.
@@ -15,8 +18,12 @@
 //! exceptions (an open sale, a live agent session…). The default is
 //! [`NeverIdle`]: an app that does not define idle never gets anything
 //! applied on its own. [`when_idle`] waits for the hook and runs the app's
-//! apply closure once; how to apply (hot reload, `execve` + trial, a daemon
-//! swap) stays in the app — the crate has no generic daemon restart.
+//! apply closure once. That closure is opaque: how to apply (hot reload,
+//! `execve` + [`crate::install::full`]'s AppImage `trial`, a Nix profile
+//! switch, a daemon swap) and how to roll back stay with the caller — the
+//! crate has no generic daemon restart, and the `trial` rollback is the
+//! AppImage's own (a path-based file contract); Nix installs roll back
+//! through their profile generations instead.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -24,14 +31,18 @@ use std::time::Duration;
 
 use crate::manifest::Urgency;
 
-/// Which channel an artifact came through.
+/// How applying an artifact affects the running app — the only thing the
+/// policy looks at. `#[non_exhaustive]`: match it with a `_` arm outside
+/// this crate.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ArtifactKind {
-    /// A partial artifact (frontend bundle): applied without restarting the
-    /// process.
-    Partial,
-    /// The whole app package: applying it restarts the process.
-    Full,
+pub enum ApplyKind {
+    /// Applied inside the running process, in seconds (a partial frontend
+    /// bundle: reload the webview).
+    Hot,
+    /// Applying it restarts the process (an AppImage swap + `execve`; a Nix
+    /// generation switch).
+    Restart,
 }
 
 /// What the app should do with a downloaded and verified artifact.
@@ -45,11 +56,11 @@ pub enum Decision {
 }
 
 /// The default policy table (see the module docs).
-pub fn decide(urgency: Urgency, kind: ArtifactKind) -> Decision {
+pub fn decide(urgency: Urgency, kind: ApplyKind) -> Decision {
     match (urgency, kind) {
         (Urgency::Normal, _) => Decision::Ask,
-        (Urgency::Urgent, ArtifactKind::Partial) => Decision::ApplyWhenIdle,
-        (Urgency::Urgent, ArtifactKind::Full) => Decision::Ask,
+        (Urgency::Urgent, ApplyKind::Hot) => Decision::ApplyWhenIdle,
+        (Urgency::Urgent, ApplyKind::Restart) => Decision::Ask,
         (Urgency::Forced, _) => Decision::ApplyWhenIdle,
     }
 }
@@ -226,15 +237,15 @@ mod tests {
 
     #[test]
     fn the_decision_table() {
-        use ArtifactKind::{Full, Partial};
+        use ApplyKind::{Hot, Restart};
         use Decision::{ApplyWhenIdle, Ask};
         let cases = [
-            (Urgency::Normal, Partial, Ask),
-            (Urgency::Normal, Full, Ask),
-            (Urgency::Urgent, Partial, ApplyWhenIdle),
-            (Urgency::Urgent, Full, Ask),
-            (Urgency::Forced, Partial, ApplyWhenIdle),
-            (Urgency::Forced, Full, ApplyWhenIdle),
+            (Urgency::Normal, Hot, Ask),
+            (Urgency::Normal, Restart, Ask),
+            (Urgency::Urgent, Hot, ApplyWhenIdle),
+            (Urgency::Urgent, Restart, Ask),
+            (Urgency::Forced, Hot, ApplyWhenIdle),
+            (Urgency::Forced, Restart, ApplyWhenIdle),
         ];
         for (urgency, kind, expected) in cases {
             assert_eq!(decide(urgency, kind), expected, "{urgency:?} × {kind:?}");

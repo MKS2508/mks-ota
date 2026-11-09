@@ -47,6 +47,14 @@
 //!   version that dies before `on_boot` (missing library, broken image): two
 //!   failed starts and the launcher reverts.
 //!
+//! # Scope: AppImage only
+//!
+//! This is the rollback of a full update **delivered as an AppImage**, keyed
+//! by its path. Other install methods bring their own: a Nix-managed install
+//! (TR-33 of `tpv-el-haido2`) rolls back through profile generations and
+//! never touches `<app_path>.ota/`. [`crate::policy`] does not know about
+//! either — it only runs the caller's opaque apply closure.
+//!
 //! Every function takes the already-resolved `app_path`
 //! ([`super::linux::current_app_bundle`]) and reads no environment variable:
 //! a dev or deb build simply never calls into this module.
