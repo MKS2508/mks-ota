@@ -60,7 +60,7 @@ impl Urgency {
         }
     }
 
-    /// Wire form: `"normal"` | `"urgent"`.
+    /// Wire form: `"normal"` | `"urgent"` | `"forced"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Urgency::Normal => "normal",
