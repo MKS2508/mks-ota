@@ -7,20 +7,30 @@ use serde::{Deserialize, Serialize};
 use crate::error::OtaError;
 
 /// How insistently a published version should reach the device. Travels in
-/// `/latest` (the source of truth) and is repeated in push events.
+/// `/latest` (the source of truth) and is repeated in push events. Ordered
+/// `Normal < Urgent < Forced`; what each level means for applying is
+/// [`crate::policy::decide`], always on the client.
+///
+/// - `Normal`: ask, the user may postpone.
+/// - `Urgent`: insist; a partial artifact may apply itself when the app is idle.
+/// - `Forced`: the operator wants it applied as soon as the app reports idle
+///   (through an app-provided [`crate::policy::IdleHook`]; without one,
+///   never).
 ///
 /// Deliberately tolerant: anything the client does not know — absent, `null`,
 /// a level added by a newer hub, even a non-string — deserializes as
 /// [`Urgency::Normal`]. A future value must never make a manifest or a
 /// persisted `state.json` unreadable (`load_state` would read a corrupt file
 /// as "no slot" and drop the active bundle). Serializes as `"normal"` |
-/// `"urgent"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// `"urgent"` | `"forced"`. Extensible: a new level is a new variant here and
+/// reads as `Normal` on every client released before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", from = "UrgencyWire")]
 pub enum Urgency {
     #[default]
     Normal,
     Urgent,
+    Forced,
 }
 
 /// Whatever the wire carries; folded into [`Urgency`] by `From`.
@@ -45,6 +55,7 @@ impl Urgency {
     pub fn parse(raw: Option<&str>) -> Urgency {
         match raw.map(str::trim) {
             Some(v) if v.eq_ignore_ascii_case("urgent") => Urgency::Urgent,
+            Some(v) if v.eq_ignore_ascii_case("forced") => Urgency::Forced,
             _ => Urgency::Normal,
         }
     }
@@ -52,8 +63,9 @@ impl Urgency {
     /// Wire form: `"normal"` | `"urgent"`.
     pub fn as_str(self) -> &'static str {
         match self {
-            Urgency::Urgent => "urgent",
             Urgency::Normal => "normal",
+            Urgency::Urgent => "urgent",
+            Urgency::Forced => "forced",
         }
     }
 }
@@ -93,7 +105,7 @@ pub struct HubLatest {
     /// sent or the hub does not know that version.
     #[serde(default)]
     pub newer_than_current: Option<bool>,
-    /// Raw urgency as the hub sent it (`"normal"` | `"urgent"`). Kept as a
+    /// Raw urgency as the hub sent it (`"normal"` | `"urgent"` | `"forced"`). Kept as a
     /// string so a level added by a newer hub cannot fail deserialization;
     /// read it through [`HubLatest::urgency`]. Absent on older hubs.
     #[serde(default)]
@@ -250,6 +262,8 @@ mod tests {
         assert_eq!(parse(r#","urgency":null"#).urgency(), Urgency::Normal, "null");
         assert_eq!(parse(r#","urgency":"normal""#).urgency(), Urgency::Normal);
         assert_eq!(parse(r#","urgency":"urgent""#).urgency(), Urgency::Urgent);
+        assert_eq!(parse(r#","urgency":"forced""#).urgency(), Urgency::Forced);
+        assert_eq!(parse(r#","urgency":"FORCED""#).urgency(), Urgency::Forced);
         assert_eq!(parse(r#","urgency":"critical""#).urgency(), Urgency::Normal, "a future level never breaks the client");
     }
 
@@ -262,6 +276,15 @@ mod tests {
         assert_eq!(serde_json::to_string(&Urgency::Urgent).unwrap(), r#""urgent""#);
         assert_eq!(serde_json::to_string(&Urgency::Normal).unwrap(), r#""normal""#);
         assert_eq!(Urgency::Urgent.as_str(), "urgent");
+        assert_eq!(serde_json::from_str::<Urgency>(r#""forced""#).unwrap(), Urgency::Forced);
+        assert_eq!(serde_json::to_string(&Urgency::Forced).unwrap(), r#""forced""#);
+    }
+
+    #[test]
+    fn urgency_levels_are_ordered() {
+        assert!(Urgency::Normal < Urgency::Urgent && Urgency::Urgent < Urgency::Forced);
+        assert_eq!(Urgency::default(), Urgency::Normal);
+        assert_eq!([Urgency::Forced, Urgency::Normal, Urgency::Urgent].iter().max(), Some(&Urgency::Forced));
     }
 
     #[test]
