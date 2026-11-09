@@ -29,5 +29,24 @@ jobs:
 
       # Caches ~/.cargo registry + per-job target/ keyed on Cargo.toml hash.
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            tauri3
+
+      # Tauri 2's GTK/WebKit stack, needed by `--features tauri` on Linux.
+      # Tauri 3 (tauri3/) builds without them.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev
 
       - run: cargo test
+
+      # Tauri 2 build of the Tauri-bound modules (protocol, arm_hot_apply).
+      # `!cancelled()`: each build reports on its own even if an earlier
+      # step failed.
+      - if: ${{ !cancelled() }}
+        run: cargo test --features tauri
+
+      # Tauri 3 build of the same source (own workspace, own lockfile).
+      - if: ${{ !cancelled() }}
+        run: cargo test --manifest-path tauri3/Cargo.toml --features tauri

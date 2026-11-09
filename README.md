@@ -44,6 +44,28 @@ See `CHANGELOG.md` for what each version added.
 mks-ota = { git = "ssh://git@github.com/MKS2508/mks-ota", tag = "v0.1.0" }
 ```
 
+### Tauri 2 or Tauri 3
+
+The Tauri-bound modules (`protocol`, `watchdog::arm_hot_apply`) sit behind the `tauri` feature.
+Which Tauri major that means depends on the package:
+
+```toml
+# Tauri 2
+mks-ota = { git = "ssh://git@github.com/MKS2508/mks-ota", tag = "v0.6.0", features = ["tauri"] }
+
+# Tauri 3 (pinned to tauri =3.0.0-alpha.6): same source, same `mks_ota` crate name
+mks-ota = { package = "mks-ota-tauri3", git = "ssh://git@github.com/MKS2508/mks-ota", tag = "v0.6.0", features = ["tauri"] }
+```
+
+They are two packages, not two features, because `tauri` declares `links = "Tauri"` and one
+manifest cannot name both majors (see CHANGELOG 0.6.0). Code that must differ between majors
+uses `#[cfg(feature = "tauri-v3")]`. Test both with:
+
+```sh
+cargo test --features tauri                                    # Tauri 2
+cargo test --manifest-path tauri3/Cargo.toml --features tauri  # Tauri 3
+```
+
 The pubkey, the hub URL, and which artifact classes to request are the caller's responsibility —
 this crate has no baked configuration.
 

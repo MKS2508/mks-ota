@@ -2,7 +2,38 @@
 
 Versions are git tags (`vX.Y.Z`); consumers pin a `rev`/`tag` (see README).
 
-## 0.5.0 — unreleased
+## 0.6.0 — 2026-11-10
+
+Tauri 3 support next to Tauri 2 (TR-42 of `tpv-el-haido2`). No change for Tauri 2 consumers:
+`mks-ota` with `features = ["tauri"]` still means Tauri 2 and its public API is unchanged.
+
+### Added
+- `mks-ota-tauri3` (in `tauri3/`): a second package that builds this same `src/` with the
+  `tauri` feature bound to `tauri = "=3.0.0-alpha.6"` (what `tpv-el-haido2` resolves next to
+  `tauri-runtime-cef` 3.0.0-alpha.7). Same crate name (`mks_ota`), same modules, same feature
+  name, so a Tauri 3 app depends on it renamed and keeps its `use mks_ota::...` paths:
+  `mks-ota = { package = "mks-ota-tauri3", git = "...", tag = "v0.6.0", features = ["tauri"] }`.
+  It is its own workspace with its own lockfile and shares `tests/` (fixtures via symlink).
+- `tauri-v3` feature marker, implied by `tauri` in `mks-ota-tauri3` only: the shared source uses
+  `#[cfg(feature = "tauri-v3")]` where a Tauri API differs between majors. Nothing needs it
+  today: the Tauri-bound code (`protocol`, `watchdog::arm_hot_apply`) compiles unchanged on both.
+- Test `tauri_major::the_package_links_the_tauri_major_it_promises`: each package asserts
+  `tauri::VERSION` is the major it promises.
+
+### Why a package and not a `tauri3` feature
+`tauri` declares `links = "Tauri"`, and Cargo puts every optional dependency in the resolved
+graph whether its feature is on or not: a manifest naming tauri 2 and tauri 3 — both optional,
+neither enabled — fails to resolve (`package tauri links to the native library Tauri, but it
+conflicts with a previous package which links to Tauri as well`). For the same reason
+`mks-ota-tauri3` cannot depend on `mks-ota` by path and shares source by path instead. Enabling
+"both" is therefore impossible by construction: a graph with both packages fails at resolution
+with that `links` error.
+
+### Caveat
+`mks-ota-tauri3`'s lib and tests live outside its package directory (`../src`, `../tests`):
+fine as a git dependency (the whole repo is checked out), not publishable to crates.io as is.
+
+## 0.5.0
 
 Push channel, urgency with a client-side apply policy, and an unattended-safe full update
 (TR-30 of `tpv-el-haido2`). Built on `main`, which also carries everything merged after 0.3.0
