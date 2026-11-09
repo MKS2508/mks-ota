@@ -15,8 +15,10 @@ Push channel, urgency with a client-side apply policy, and an unattended-safe fu
 - `manifest::Urgency` (`normal` < `urgent` < `forced`, `Ord`) and `HubLatest::urgency()`. The
   raw field is `HubLatest.urgency: Option<String>`, next to `ordering`; absent, `null`, unknown
   or non-string values read as `Normal`, so a level added by a newer hub never breaks the client.
-- `policy`: `decide(urgency, ArtifactKind) -> Decision { Ask, ApplyWhenIdle }` (normal asks;
-  urgent applies partials when idle and asks for fulls; forced applies both when idle), the
+- `policy`: `decide(urgency, ApplyKind) -> Decision { Ask, ApplyWhenIdle }`, keyed on how the
+  update applies — `#[non_exhaustive] ApplyKind { Hot, Restart }` (bundle = `Hot`; AppImage and,
+  later, a Nix generation = `Restart`) — so new artifact formats do not change the table. Normal
+  asks; urgent applies `Hot` when idle and asks for `Restart`; forced applies both when idle. The
   app-defined `IdleHook` (closures implement it) with `NeverIdle` as the safe default, and
   `when_idle(hook, every, apply) -> WhenIdle` (asks at once, every tick and on `nudge()`,
   re-asks right before applying, runs `apply` once; `cancel()` / drop cancel). How to apply
@@ -27,7 +29,8 @@ Push channel, urgency with a client-side apply policy, and an unattended-safe fu
 - `push`: optional SSE subscription to the hub's `GET /api/events?components=…`.
   `push::subscribe(PushConfig, FnMut(PushSignal))` → `PushHandle` (`stop()` joins; drop stops
   without waiting). Signals are `Connected` (query `/latest` now: the hub does not replay) and
-  `Published { component, version, urgency }` — a hint, never a `HubLatest`. Exponential backoff
+  `Published { component, version, kind, urgency }` (`kind` optional: older hubs omit it) — a
+  hint, never a `HubLatest`. Exponential backoff
   with full jitter (1 s → 300 s by default, reset only after a connection lived 60 s), `retry:`
   as the minimum delay, `Last-Event-ID` on reconnect, 40 s read timeout. One `std` thread per
   subscription, blocking client built inside it, no global state, no new dependencies.
@@ -38,7 +41,8 @@ Push channel, urgency with a client-side apply policy, and an unattended-safe fu
   (hardlink, or an fsynced copy renamed into place), `on_boot` counts boots and returns
   `MustRevert` past `MAX_FULL_BOOTS` (2), `mark_ready`, `revert`, `reverted_version`,
   `trial_version`, `FULL_READY_GRACE` (120 s). Plain one-line files with atomic writes, a
-  contract shared with shell launchers (documented in the module).
+  contract shared with shell launchers (documented in the module). AppImage-only by design;
+  Nix-managed installs will roll back through profile generations.
 - `OtaError::Paused`, `OtaError::NothingToRevert`.
 - `CHANGELOG.md`.
 
