@@ -3,14 +3,71 @@ name = "mks-ota-tauri3"
 version = "0.6.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "mks-ota for Tauri 3: the same crate, with the Tauri-bound modules (protocol, watchdog::arm_hot_apply) compiled against Tauri 3."
+description = "mks-ota built against Tauri 3: the same source tree as mks-ota, with the `tauri` feature bound to tauri 3."
 repository = "https://github.com/MKS2508/mks-ota"
+autotests = false
+autoexamples = false
 
-# Own workspace and own lockfile, on purpose: `tauri` declares
-# `links = "Tauri"`, so tauri 2 and tauri 3 cannot share one dependency
-# graph — not even as two optional deps of the same package. Keeping this
-# package out of the root graph is what lets both exist in one repo.
+# Why a second package and not a `tauri3` feature on mks-ota:
+# `tauri` declares `links = "Tauri"`, and Cargo puts every optional
+# dependency into the resolved graph whether its feature is on or not. A
+# manifest that names tauri 2 and tauri 3 — even both optional — fails to
+# resolve for every consumer. So the Tauri 3 build must be a package whose
+# manifest never mentions tauri 2, and that includes NOT depending on
+# mks-ota by path (its optional tauri 2 would come along).
+#
+# It shares the source instead: the lib and the tests below point at the
+# root `src/` and `tests/`. Same crate name (`mks_ota`), same modules,
+# same `tauri` feature name, so `#[cfg(feature = "tauri")]` in the shared
+# files works unchanged and a consumer's `use mks_ota::...` does not move.
+#
+# Own workspace and own lockfile: this package must stay out of the root
+# package's graph for the same `links` reason.
 [workspace]
 
+[lib]
+name = "mks_ota"
+path = "../src/lib.rs"
+
+[[test]]
+name = "download_controlled"
+path = "../tests/download_controlled.rs"
+
+[[test]]
+name = "partial_pipeline"
+path = "../tests/partial_pipeline.rs"
+
+[[test]]
+name = "policy_api"
+path = "../tests/policy_api.rs"
+
+[[test]]
+name = "push_sse"
+path = "../tests/push_sse.rs"
+
+[features]
+default = []
+# Same name as in mks-ota, bound to tauri 3 here.
+tauri = ["dep:tauri", "dep:tokio"]
+
+# Keep in sync with the root Cargo.toml: only `tauri` differs.
 [dependencies]
-mks-ota = { path = "..", version = "0.6.0", default-features = false }
+minisign-verify = "0.2.5"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+flate2 = "1.1"
+tar = "0.4"
+sha2 = "0.11"
+tempfile = "3.27"
+semver = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Pinned exact: Tauri 3 is alpha and its pre-releases break between alphas.
+# Aligned with what tpv-el-haido2 resolves next to tauri-runtime-cef 3.0.0-alpha.7.
+tauri = { version = "=3.0.0-alpha.6", optional = true, default-features = false }
+tokio = { version = "1", optional = true, features = ["time"] }
+
+[dev-dependencies]
+minisign = "0.7"
